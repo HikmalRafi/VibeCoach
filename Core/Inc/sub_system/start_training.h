@@ -7,7 +7,10 @@
 #ifndef START_TRAINING_H
 #define START_TRAINING_H
 
+extern volatile uint8_t point;
+
 void training_menu(void);
 void training_tinyML(void);
+void deltoid_menu(void);
 
 #endif

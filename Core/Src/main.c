@@ -30,6 +30,8 @@
 #include <lcd_screen/ssd1306.h>
 #include "sub_system/start_training.h"
 #include "device&module_tester/device_tester.h"
+
+
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -109,6 +111,7 @@ int main(void)
   stm32_i2c_write(0x68, MPU9250_PWR_MGMT_1, 1, &data);
   ssd1306_Init();
 
+
   HAL_Delay(100);
   /* USER CODE END 2 */
 
@@ -117,27 +120,6 @@ int main(void)
   while (1){
 	  //training_tinyML();
 	  training_menu();
-	  //raw accel and gyro data
-	  /*if(count == 1){
-			  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);	//off red led
-			  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_SET);	//on green led
-			  vec3 accel = accel_data();	//set accel data from MPU9250_raw_data.c
-			  vec3 gyro = gyro_data();		//set gyro data from MPU9250_raw_data.c
-
-			  //print to serial monitor with UART
-		      char buf[100];
-	          sprintf(buf, "%.2f,%.2f,%.2f,%.2f,%.2f,%.2f\r\n", accel.x, accel.y, accel.z, gyro.x, gyro.y, gyro.z);
-	          HAL_UART_Transmit(&huart1, (uint8_t*)buf, strlen(buf), HAL_MAX_DELAY);
-	          //print to serial monitor with UART
-
-	          HAL_Delay(10); //set 5ms delay, because i want to set sampleFreq in 200.0f and want to read detail data
-	  } else if(count == 0){
-		  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET); //off green led
-		  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);	//on red led
-	  }*/
-
-
-
 
     /* USER CODE END WHILE */
 
