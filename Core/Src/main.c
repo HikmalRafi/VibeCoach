@@ -102,7 +102,6 @@ int main(void)
   MX_USART1_UART_Init();
   MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
-  //vec3 acc = accel_data();
   HAL_Delay(3000);
   uint8_t data;
 
@@ -110,6 +109,9 @@ int main(void)
   data = 0x00;
   stm32_i2c_write(0x68, MPU9250_PWR_MGMT_1, 1, &data);
   ssd1306_Init();
+
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET); //off green led
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);	//on red led
 
 
   HAL_Delay(100);

@@ -7,10 +7,25 @@
 #ifndef START_TRAINING_H
 #define START_TRAINING_H
 
-extern volatile uint8_t point;
+// Forward declaration agar Struct bisa saling mengenali
+struct MenuPage_s;
+
+
+
+typedef void (*MenuAction_t)(void);
+
+typedef struct{
+	const char* text;
+	MenuAction_t action;
+}MenuItem_t;
+
+typedef struct MenuPage_s{
+	const char* title;
+	const MenuItem_t* items;
+	uint8_t num_items;
+	const struct MenuPage_s* parent;
+}MenuPage_t;
 
 void training_menu(void);
-void training_tinyML(void);
-void deltoid_menu(void);
 
 #endif

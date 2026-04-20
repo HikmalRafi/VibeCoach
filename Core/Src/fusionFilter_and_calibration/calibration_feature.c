@@ -9,6 +9,9 @@ volatile float q3_base;
 
 void calibrateQuaternion(void){
 	calibrated = true; //save calibration status
+
+	ssd1306_Fill(Black);
+	lcd_center_BigStr("Ready");
 	//perform sensor data stabilization
 	for(int j=0; j<200; j++) {
 	        vec3 accel = accel_data();
@@ -37,7 +40,8 @@ void calibrateQuaternion(void){
 		counter++;
 
 		if(counter % 100 == 0){
-			lcd_char(second, Font_11x18, White, 22, 18);
+			ssd1306_Fill(Black);
+			lcd_center_BigChar(second);
 		    second--;
 		}
 	    HAL_Delay(10);
