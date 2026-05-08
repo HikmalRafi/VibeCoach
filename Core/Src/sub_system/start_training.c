@@ -57,19 +57,7 @@ void action_mulai_deltoid(void) {
 		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);	//off red led
 		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_SET);	//on green led
 
-		if(calibrated == false){
-			  calibrateQuaternion();
-		}
 
-		Quaternion quarter = invQ();
-
-		//print to serial monitor with UART
-	    char buf[100];
-        sprintf(buf, "%.2f,%.2f,%.2f,%.2f\r\n", quarter.w, quarter.x, quarter.y, quarter.z);
-        HAL_UART_Transmit(&huart1, (uint8_t*)buf, strlen(buf), HAL_MAX_DELAY);
-        //print to serial monitor with UART
-
-        HAL_Delay(10); //set 5ms delay, because i want to set sampleFreq in 200.0f and want to read detail data
 
 		if(button_read(&btn_ok) == 1){
 			training_is = 0;

@@ -1,5 +1,6 @@
 #include <fusionFilter_and_calibration/calibration_feature.h>
 #include <imu_sensor/MPU9250_raw_data.h>
+#include <tinyML/tinyML.h>
 #include "main.h"
 #include "usart.h"
 #include "debounce_button.h"
