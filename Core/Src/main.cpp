@@ -22,18 +22,18 @@
 #include "i2c.h"
 #include "usart.h"
 #include "gpio.h"
+#include "spi.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 extern "C"{
-	#include <fusionFilter_and_calibration/Madgwick_filter.h>
-	#include <imu_sensor/MPU9250_RegisterMap.h>
-	#include <imu_sensor/stm32_mpu9250_i2c.h>
-	#include <lcd_screen/ssd1306.h>
-	#include "sub_system/start_training.h"
-	#include "device&module_tester/device_tester.h"
+#include <fusionFilter_and_calibration/Madgwick_filter.h>
+#include <imu_sensor/MPU9250_RegisterMap.h>
+#include <imu_sensor/stm32_mpu9250_i2c.h>
+#include "device&module_tester/device_tester.h"
+#include "lcd_screen/st7735.h"
+#include "system_ui/main_menu.h"
 }
-
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -102,19 +102,24 @@ int main(void)
   MX_GPIO_Init();
   MX_I2C1_Init();
   MX_USART1_UART_Init();
-  MX_I2C2_Init();
   MX_CRC_Init();
+  MX_TIM1_Init();
+  MX_SPI1_Init();
+
   /* USER CODE BEGIN 2 */
   HAL_Delay(3000);
   uint8_t data;
 
+  //lcd TF7735
+  ST7735_Init();
+
   /* bangunkan MPU */
   data = 0x00;
   stm32_i2c_write(0x68, MPU9250_PWR_MGMT_1, 1, &data);
-  ssd1306_Init();
 
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET); //off green led
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);	//on red led
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
 
 
   HAL_Delay(100);
@@ -125,8 +130,6 @@ int main(void)
   while (1){
 	  //training_tinyML();
 	  training_menu();
-
-
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

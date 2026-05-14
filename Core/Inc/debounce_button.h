@@ -1,9 +1,9 @@
+#ifndef DEBOUNCE_BUTTON_H
+#define DEBOUNCE_BUTTON_H
+
 #include "main.h"
 #include <stdint.h>
 #include "stm32f4xx_hal.h"
-
-#ifndef DEBOUNCE_BUTTON_H
-#define DEBOUNCE_BUTTON_H
 
 typedef struct{
 	GPIO_TypeDef* port;

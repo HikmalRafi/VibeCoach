@@ -1,7 +1,6 @@
 #include <fusionFilter_and_calibration/Madgwick_filter.h>
 #include <imu_sensor/MPU9250_raw_data.h>
-#include <lcd_screen/lcd_screen.h>
-#include <lcd_screen/ssd1306.h>
+#include "lcd_screen/st7735.h"
 #include "main.h"
 
 #ifndef CALIBRATION_FEATURE_H

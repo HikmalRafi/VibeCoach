@@ -35,6 +35,8 @@ extern "C" {
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include "tim.h"
+#include <float.h>
 #include <math.h>
 /* USER CODE END Includes */
 
@@ -60,6 +62,12 @@ void Error_Handler(void);
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
+#define CS_Pin GPIO_PIN_1
+#define CS_GPIO_Port GPIOA
+#define RST_Pin GPIO_PIN_2
+#define RST_GPIO_Port GPIOA
+#define D_C_Pin GPIO_PIN_3
+#define D_C_GPIO_Port GPIOA
 
 /* USER CODE BEGIN Private defines */
 

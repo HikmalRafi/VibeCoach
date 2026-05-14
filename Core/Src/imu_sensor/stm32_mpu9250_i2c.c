@@ -1,149 +1,136 @@
 #include <imu_sensor/stm32_mpu9250_i2c.h>
 
-#define I2C_SCL_Pin 6
-#define I2C_SCL_GPIO_Port GPIOB
-#define I2C_SDA_Pin 7
-#define I2C_SDA_GPIO_Port GPIOB
+#define I2C_SCL_Pin         GPIO_PIN_6
+#define I2C_SCL_GPIO_Port   GPIOB
+#define I2C_SDA_Pin         GPIO_PIN_7
+#define I2C_SDA_GPIO_Port   GPIOB
+
+// FIX: Timeout wajar untuk I2C Fast Mode (400kHz)
+// Baca 14 byte ≈ 0.35ms → 5ms margin sudah sangat aman
+#define I2C_TIMEOUT_MS      5
 
 extern I2C_HandleTypeDef hi2c1;
 
-static uint8_t wait_for_gpio_state_timeout(GPIO_TypeDef* port, uint16_t pin, GPIO_PinState state, uint32_t timeout)
+// =====================================================================
+// INTERNAL: Tunggu pin sampai state tertentu
+// =====================================================================
+static uint8_t wait_for_gpio_state_timeout(GPIO_TypeDef* port, uint16_t pin,
+                                            GPIO_PinState state, uint32_t timeout)
 {
-    uint32_t Tickstart = HAL_GetTick();
-    uint8_t ret = 1;
-    /* Wait until flag is set */
-    for (; (state != HAL_GPIO_ReadPin(port, pin)) && (1 == ret);)
+    uint32_t tickstart = HAL_GetTick();
+    while (HAL_GPIO_ReadPin(port, pin) != state)
     {
-        /* Check for the timeout */
-        if (timeout != HAL_MAX_DELAY)
-        {
-            if ((timeout == 0U) || ((HAL_GetTick() - Tickstart) > timeout))
-            {
-                ret = 0;
-            }
-            else
-            {
-            }
-        }
+        if ((HAL_GetTick() - tickstart) > timeout) return 0; // timeout
         asm("nop");
     }
-    return ret;
+    return 1;
 }
 
+// =====================================================================
+// INTERNAL: Recovery jika bus I2C stuck (BUSY flag tidak clear)
+// =====================================================================
 static void I2C_ClearBusyFlagErratum(I2C_HandleTypeDef* handle, uint32_t timeout)
 {
     GPIO_InitTypeDef GPIO_InitStructure;
 
-    // 1. Clear PE bit.
     CLEAR_BIT(handle->Instance->CR1, I2C_CR1_PE);
-
-    //  2. Configure the SCL and SDA I/Os as General Purpose Output Open-Drain, High level (Write 1 to GPIOx_ODR).
     HAL_I2C_DeInit(handle);
 
-    GPIO_InitStructure.Mode = GPIO_MODE_OUTPUT_OD;
-    GPIO_InitStructure.Pull = GPIO_NOPULL;
+    GPIO_InitStructure.Mode  = GPIO_MODE_OUTPUT_OD;
+    GPIO_InitStructure.Pull  = GPIO_NOPULL;
+    GPIO_InitStructure.Speed = GPIO_SPEED_FREQ_LOW;
 
     GPIO_InitStructure.Pin = I2C_SCL_Pin;
     HAL_GPIO_Init(I2C_SCL_GPIO_Port, &GPIO_InitStructure);
-
     GPIO_InitStructure.Pin = I2C_SDA_Pin;
     HAL_GPIO_Init(I2C_SDA_GPIO_Port, &GPIO_InitStructure);
 
-    // 3. Check SCL and SDA High level in GPIOx_IDR.
+    // Generate STOP condition secara manual
     HAL_GPIO_WritePin(I2C_SDA_GPIO_Port, I2C_SDA_Pin, GPIO_PIN_SET);
     HAL_GPIO_WritePin(I2C_SCL_GPIO_Port, I2C_SCL_Pin, GPIO_PIN_SET);
-
     wait_for_gpio_state_timeout(I2C_SCL_GPIO_Port, I2C_SCL_Pin, GPIO_PIN_SET, timeout);
     wait_for_gpio_state_timeout(I2C_SDA_GPIO_Port, I2C_SDA_Pin, GPIO_PIN_SET, timeout);
 
-    // 4. Configure the SDA I/O as General Purpose Output Open-Drain, Low level (Write 0 to GPIOx_ODR).
     HAL_GPIO_WritePin(I2C_SDA_GPIO_Port, I2C_SDA_Pin, GPIO_PIN_RESET);
-
-    // 5. Check SDA Low level in GPIOx_IDR.
     wait_for_gpio_state_timeout(I2C_SDA_GPIO_Port, I2C_SDA_Pin, GPIO_PIN_RESET, timeout);
 
-    // 6. Configure the SCL I/O as General Purpose Output Open-Drain, Low level (Write 0 to GPIOx_ODR).
     HAL_GPIO_WritePin(I2C_SCL_GPIO_Port, I2C_SCL_Pin, GPIO_PIN_RESET);
-
-    // 7. Check SCL Low level in GPIOx_IDR.
     wait_for_gpio_state_timeout(I2C_SCL_GPIO_Port, I2C_SCL_Pin, GPIO_PIN_RESET, timeout);
 
-    // 8. Configure the SCL I/O as General Purpose Output Open-Drain, High level (Write 1 to GPIOx_ODR).
     HAL_GPIO_WritePin(I2C_SCL_GPIO_Port, I2C_SCL_Pin, GPIO_PIN_SET);
-
-    // 9. Check SCL High level in GPIOx_IDR.
     wait_for_gpio_state_timeout(I2C_SCL_GPIO_Port, I2C_SCL_Pin, GPIO_PIN_SET, timeout);
 
-    // 10. Configure the SDA I/O as General Purpose Output Open-Drain , High level (Write 1 to GPIOx_ODR).
     HAL_GPIO_WritePin(I2C_SDA_GPIO_Port, I2C_SDA_Pin, GPIO_PIN_SET);
-
-    // 11. Check SDA High level in GPIOx_IDR.
     wait_for_gpio_state_timeout(I2C_SDA_GPIO_Port, I2C_SDA_Pin, GPIO_PIN_SET, timeout);
 
-    // 12. Configure the SCL and SDA I/Os as Alternate function Open-Drain.
-    GPIO_InitStructure.Mode = GPIO_MODE_AF_OD;
-    GPIO_InitStructure.Alternate = GPIO_AF4_I2C2;
-
+    // Kembalikan ke mode AF (Alternate Function I2C)
+    GPIO_InitStructure.Mode      = GPIO_MODE_AF_OD;
+    GPIO_InitStructure.Alternate = GPIO_AF4_I2C1; // FIX: hi2c1 → AF4_I2C1 (bukan I2C2)
     GPIO_InitStructure.Pin = I2C_SCL_Pin;
     HAL_GPIO_Init(I2C_SCL_GPIO_Port, &GPIO_InitStructure);
-
     GPIO_InitStructure.Pin = I2C_SDA_Pin;
     HAL_GPIO_Init(I2C_SDA_GPIO_Port, &GPIO_InitStructure);
 
-    // 13. Set SWRST bit in I2Cx_CR1 register.
+    // Software reset
     SET_BIT(handle->Instance->CR1, I2C_CR1_SWRST);
     asm("nop");
-
-    /* 14. Clear SWRST bit in I2Cx_CR1 register. */
     CLEAR_BIT(handle->Instance->CR1, I2C_CR1_SWRST);
     asm("nop");
-
-    /* 15. Enable the I2C peripheral by setting the PE bit in I2Cx_CR1 register */
     SET_BIT(handle->Instance->CR1, I2C_CR1_PE);
     asm("nop");
 
-    // Call initialization function.
     HAL_I2C_Init(handle);
 }
 
+// =====================================================================
+// PUBLIC: Tulis register ke slave
+// =====================================================================
 int stm32_i2c_write(unsigned char slave_addr, unsigned char reg_addr,
-                       unsigned char length, unsigned char *data)
+                    unsigned char length, unsigned char *data)
 {
-    uint8_t data_for_transmit[length + 1];
+    // FIX: Ganti VLA dengan buffer statis ukuran maksimum
+    // Max write untuk MPU9250: 1 reg + 1 byte data = 2 byte
+    // Kasih ruang lebih untuk keamanan
+    uint8_t buf[16];
+    if (length > (sizeof(buf) - 1)) return -1; // Guard: tolak jika terlalu besar
 
-    data_for_transmit[0] = reg_addr;
-
-    for (unsigned char i = 0; i < length; i++)
-    {
-        data_for_transmit[i + 1] = data[i];
+    buf[0] = reg_addr;
+    for (unsigned char i = 0; i < length; i++) {
+        buf[i + 1] = data[i];
     }
 
-    HAL_StatusTypeDef ret_V = HAL_I2C_Master_Transmit(&hi2c1, slave_addr << 1, data_for_transmit, (length + 1), 0xff);
-
-    if (ret_V != HAL_OK)
-    {
+    HAL_StatusTypeDef ret = HAL_I2C_Master_Transmit(&hi2c1, slave_addr << 1,
+                                                     buf, length + 1,
+                                                     I2C_TIMEOUT_MS); // FIX: timeout 5ms
+    if (ret != HAL_OK) {
         I2C_ClearBusyFlagErratum(&hi2c1, 10);
     }
 
-    return ret_V;
+    return (int)ret;
 }
 
+// =====================================================================
+// PUBLIC: Baca register dari slave
+// =====================================================================
 int stm32_i2c_read(unsigned char slave_addr, unsigned char reg_addr,
-                       unsigned char length, unsigned char * data)
+                   unsigned char length, unsigned char *data)
 {
-    HAL_StatusTypeDef ret_V = HAL_I2C_Master_Transmit(&hi2c1, slave_addr << 1, &reg_addr, 1, 0xff);
-    if (ret_V != HAL_OK)
-    {
+    // Step 1: Kirim alamat register yang ingin dibaca
+    HAL_StatusTypeDef ret = HAL_I2C_Master_Transmit(&hi2c1, slave_addr << 1,
+                                                     &reg_addr, 1,
+                                                     I2C_TIMEOUT_MS); // FIX: timeout 5ms
+    if (ret != HAL_OK) {
         I2C_ClearBusyFlagErratum(&hi2c1, 10);
-        return ret_V;
+        return (int)ret;
     }
 
-    ret_V = HAL_I2C_Master_Receive(&hi2c1, slave_addr << 1, data, length, 0xff);
-
-    if (ret_V != HAL_OK)
-    {
+    // Step 2: Baca data
+    ret = HAL_I2C_Master_Receive(&hi2c1, slave_addr << 1,
+                                 data, length,
+                                 I2C_TIMEOUT_MS); // FIX: timeout 5ms
+    if (ret != HAL_OK) {
         I2C_ClearBusyFlagErratum(&hi2c1, 10);
     }
 
-    return ret_V;
+    return (int)ret;
 }

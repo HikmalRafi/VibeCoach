@@ -1,10 +1,14 @@
-#include "sub_system/start_training.h"
+#include "system_ui/main_menu.h"
 
-// Objek tombol
+// Definisi warna dasar (RGB565) jika belum ada di st7735.h
+#define COLOR_BLACK 0x0000
+#define COLOR_WHITE 0xFFFF
+
 static button_t btn_atas;
 static button_t btn_bawah;
 static button_t btn_ok;
 
+volatile uint8_t point = 0;
 static uint8_t init_check = 0;
 volatile uint8_t training_is = 0;
 
@@ -25,19 +29,19 @@ extern const MenuPage_t page_pushup;
 void goto_main_menu(void) {
     current_page = &page_main;
     cursor_pos = 0;
-    ssd1306_Fill(Black);
+    ST7735_FillScreenFast(COLOR_BLACK);
 }
 
 void goto_deltoid_menu(void) {
     current_page = &page_deltoid;
     cursor_pos = 0;
-    ssd1306_Fill(Black);
+    ST7735_FillScreenFast(COLOR_BLACK);
 }
 
 void goto_pushup_menu(void) {
     current_page = &page_pushup;
     cursor_pos = 0;
-    ssd1306_Fill(Black);
+    ST7735_FillScreenFast(COLOR_BLACK);
 }
 
 // Aksi ajaib untuk kembali ke menu sebelumnya (parent)
@@ -45,30 +49,40 @@ void action_kembali(void) {
     if (current_page->parent != NULL) {
         current_page = current_page->parent;
         cursor_pos = 0;
-        ssd1306_Fill(Black);
+        ST7735_FillScreenFast(COLOR_BLACK);
     }
 }
 
 // --- Aksi Eksekusi Program (Hardware) ---
 void action_mulai_deltoid(void) {
     // Di sinilah logika TinyML dan MPU9250 kamu diletakkan nantinya
-	training_is = 1;
-	while(training_is == 1){
-		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);	//off red led
-		HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_SET);	//on green led
+    training_is = 1;
+    while(training_is == 1){
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);    //off red led
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_SET);      //on green led
 
+        if(calibrated == false){
+              calibrateQuaternion();
+        }
 
+        Quaternion quarter = invQ();
 
-		if(button_read(&btn_ok) == 1){
-			training_is = 0;
-			HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET); //off green led
-			HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);	//on red led
-			ssd1306_Fill(Black);
-			calibrated = false;
-		}
-	}
-    // Kamu mungkin butuh state mesin khusus (misal: is_training = true)
-    // agar loop utama tidak menggambar menu lagi saat training berjalan.
+        //print to serial monitor with UART
+        char buf[100];
+        sprintf(buf, "%.2f,%.2f,%.2f,%.2f\r\n", quarter.w, quarter.x, quarter.y, quarter.z);
+        HAL_UART_Transmit(&huart1, (uint8_t*)buf, strlen(buf), HAL_MAX_DELAY);
+        //print to serial monitor with UART
+
+        HAL_Delay(10); //set 5ms delay, because i want to set sampleFreq in 200.0f and want to read detail data
+
+        if(button_read(&btn_ok) == 1){
+            training_is = 0;
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET); //off green led
+            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);   //on red led
+            ST7735_FillScreenFast(COLOR_BLACK);
+            calibrated = false;
+        }
+    }
 }
 
 // =====================================================================
@@ -125,6 +139,7 @@ void training_menu(void){
 
         current_page = &page_main; // Set halaman pertama
         init_check = 1;
+        ST7735_FillScreenFast(COLOR_BLACK); // Clear screen pertama kali
     }
 
     // Keamanan: Jika entah kenapa halaman kosong, jangan lakukan apa-apa
@@ -132,20 +147,26 @@ void training_menu(void){
 
     // --- BAGIAN 1: BACA TOMBOL ---
     if(button_read(&btn_atas) == 1){
+        // Timpa kursor lama dengan spasi (warna hitam) sebelum pindah
+        ST7735_WriteString(0, 18 + (cursor_pos * 10), " ", Font_7x10, COLOR_WHITE, COLOR_BLACK);
+
         if(cursor_pos > 0) {
             cursor_pos--;
         } else {
-            cursor_pos = current_page->num_items - 1; // Fitur "Wrap around" (dari paling atas lompat ke bawah)
+            cursor_pos = current_page->num_items - 1; // Fitur "Wrap around"
         }
-        ssd1306_Fill(Black);
+        // Kita tidak memakai FillScreenFast di sini agar tidak berkedip (flicker)
     }
     else if(button_read(&btn_bawah) == 1){
+        // Timpa kursor lama dengan spasi (warna hitam) sebelum pindah
+        ST7735_WriteString(0, 18 + (cursor_pos * 10), " ", Font_7x10, COLOR_WHITE, COLOR_BLACK);
+
         if(cursor_pos < current_page->num_items - 1) {
             cursor_pos++;
         } else {
-            cursor_pos = 0; // Fitur "Wrap around" (dari paling bawah lompat ke atas)
+            cursor_pos = 0; // Fitur "Wrap around"
         }
-        ssd1306_Fill(Black);
+        // Kita tidak memakai FillScreenFast di sini agar tidak berkedip (flicker)
     }
     else if(button_read(&btn_ok) == 1){
         // Panggil fungsi yang tersambung pada pilihan kursor saat ini
@@ -154,57 +175,20 @@ void training_menu(void){
         }
     }
 
-    // --- BAGIAN 2: GAMBAR KE OLED ---
+    // --- BAGIAN 2: GAMBAR KE TFT ---
     // Gambar Judul di paling atas (Baris ke-0)
-    lcd_str(current_page->title, Font_11x18, White, 0, 0);
+    // Parameter: X, Y, Text, Font, Foreground, Background
+    ST7735_WriteString(0, 0, current_page->title, Font_11x18, COLOR_WHITE, COLOR_BLACK);
 
     // Looping untuk menggambar teks pilihan
     for(uint8_t i = 0; i < current_page->num_items; i++){
 
         // Gambar kursor '>' jika i sama dengan posisi kursor
         if(cursor_pos == i){
-            lcd_str(">", Font_7x10, White, 0, 18 + (i * 10));
+            ST7735_WriteString(0, 18 + (i * 10), ">", Font_7x10, COLOR_WHITE, COLOR_BLACK);
         }
 
-        // Gambar teks menunya
-        ssd1306_SetCursor(14, 18 + (i * 10));
-        ssd1306_WriteString(current_page->items[i].text, Font_7x10, White);
+        // Gambar teks menunya (Mulai di X=14)
+        ST7735_WriteString(14, 18 + (i * 10), current_page->items[i].text, Font_7x10, COLOR_WHITE, COLOR_BLACK);
     }
-
-    // Kirim data buffer ke layar
-    ssd1306_UpdateScreen();
 }
-
-
-
-//=========================================================================================================================
-
-/*void training_tinyML(void){
-	  uint8_t btn1 = HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_2);
-
-	  // madgwick quaternion data
-	  if(count == 1){
-			  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);	//off red led
-			  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_SET);	//on green led
-
-			  if(calibrated == false){
-				  calibrateQuaternion();
-			  }
-
-			  Quaternion quarter = invQ();
-
-			  //print to serial monitor with UART
-			  lcd_str("GERAK!!", Font_11x18, White, 0, 0);
-		      char buf[100];
-	          sprintf(buf, "%.2f,%.2f,%.2f,%.2f\r\n", quarter.w, quarter.x, quarter.y, quarter.z);
-	          HAL_UART_Transmit(&huart1, (uint8_t*)buf, strlen(buf), HAL_MAX_DELAY);
-	          //print to serial monitor with UART
-
-	          HAL_Delay(10); //set 5ms delay, because i want to set sampleFreq in 200.0f and want to read detail data
-	  } else if(count == 0){
-		  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET); //off green led
-		  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);	//on red led
-		  calibrated = false;
-	  }
-}*/
-
