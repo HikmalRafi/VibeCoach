@@ -18,29 +18,29 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "adc.h"
 #include "crc.h"
 #include "i2c.h"
 #include "usart.h"
 #include "gpio.h"
 #include "spi.h"
+#include "tim.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 extern "C"{
-#include <fusionFilter_and_calibration/Madgwick_filter.h>
-#include <imu_sensor/MPU9250_RegisterMap.h>
-#include <imu_sensor/stm32_mpu9250_i2c.h>
-#include "device&module_tester/device_tester.h"
-#include "lcd_screen/st7735.h"
-#include "system_ui/main_menu.h"
+#include "../../IMU/Inc/imu_madgwick_filter.h"
+#include "../../IMU/Inc/imu_mpu9250_regmap.h"
+#include "../../IMU/Inc/imu_i2c_hal.h"
+#include "../../Lib/ST7735/st7735.h"
+#include "../../App/Inc/app_menu.h"
+#include "../../App/Inc/app_splash.h"
+#include "../../Bsp/Inc/bsp_debounce_button.h"
 }
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
-//I2C_HandleTypeDef hi2c1;
-
 
 /* USER CODE END PTD */
 
@@ -105,9 +105,10 @@ int main(void)
   MX_CRC_Init();
   MX_TIM1_Init();
   MX_SPI1_Init();
+  MX_ADC1_Init();
 
   /* USER CODE BEGIN 2 */
-  HAL_Delay(3000);
+  bsp_power_init();
   uint8_t data;
 
   //lcd TF7735
@@ -120,9 +121,8 @@ int main(void)
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET); //off green led
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);	//on red led
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+  app_splash_show_boot();
 
-
-  HAL_Delay(100);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -130,6 +130,7 @@ int main(void)
   while (1){
 	  //training_tinyML();
 	  training_menu();
+	  bsp_power_poll();
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */

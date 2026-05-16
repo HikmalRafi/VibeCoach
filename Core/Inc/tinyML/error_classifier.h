@@ -2,7 +2,8 @@
 #define ERROR_CLASSIFIER_H
 
 #include "main.h"
-#include "fusionFilter_and_calibration/Madgwick_filter.h"  // untuk roll, pitch, yaw
+
+#include "../../../IMU/Inc/imu_madgwick_filter.h"  // untuk roll, pitch, yaw
 
 // =====================================================================
 // Jenis kesalahan yang bisa dideteksi

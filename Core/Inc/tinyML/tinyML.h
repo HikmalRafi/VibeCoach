@@ -1,14 +1,10 @@
 #ifndef TINYML_H
 #define TINYML_H
 
-#include "usart.h"
 #include "main.h"
 #include <stdarg.h>
-#include "edge-impulse-sdk/classifier/ei_run_classifier.h"
-#include "tinyML/error_classifier.h"
 
-#include "fusionFilter_and_calibration/Madgwick_filter.h"
-
+// Enum ini harus terlihat oleh C dan C++
 typedef enum {
     LEVEL_NONE = 0,
     LEVEL_KOREKSI,
@@ -16,12 +12,18 @@ typedef enum {
     LEVEL_BAHAYA
 } WrongIntensity;
 
-void vprint(const char *fmt, va_list argp);
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// Daftar fungsi yang akan dipanggil di main_menu.c
 void add_sensor_data(void);
 void update_vibration(WrongIntensity level);
-
-// Getter untuk display
 WrongIntensity get_current_intensity(void);
-float          get_ema_score(void);
+float get_ema_score(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif
