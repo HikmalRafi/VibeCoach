@@ -46,7 +46,8 @@ extern "C"{
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+#define LCD_BL_PORT   GPIOB
+#define LCD_BL_PIN    GPIO_PIN_10
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -108,6 +109,7 @@ int main(void)
   MX_ADC1_Init();
 
   /* USER CODE BEGIN 2 */
+  HAL_GPIO_WritePin(LCD_BL_PORT, LCD_BL_PIN, GPIO_PIN_SET);
   bsp_power_init();
   uint8_t data;
 

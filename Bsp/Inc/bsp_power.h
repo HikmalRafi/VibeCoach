@@ -27,7 +27,7 @@
 
 /* Pin power button */
 #define PWR_BTN_PORT   GPIOB
-#define PWR_BTN_PIN    GPIO_PIN_10
+#define PWR_BTN_PIN    GPIO_PIN_1
 
 /* Untuk cek state pin secara langsung (dipakai di shutdown saat tunggu lepas) */
 #define PWR_BTN_IS_PRESSED()   (HAL_GPIO_ReadPin(PWR_BTN_PORT, PWR_BTN_PIN) == GPIO_PIN_RESET)

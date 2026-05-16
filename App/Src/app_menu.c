@@ -97,7 +97,7 @@ uint8_t page_changed = 1;  // Flag: halaman baru perlu full render
 static uint8_t last_cursor_pos = 0;  // Untuk deteksi perubahan cursor
 
 volatile uint8_t cursor_pos        = 0;
-static const MenuPage_t* current_page = NULL;
+const MenuPage_t* current_page = NULL;
 
 /* Forward declaration halaman - didefinisikan di bawah */
 extern const MenuPage_t page_main;
