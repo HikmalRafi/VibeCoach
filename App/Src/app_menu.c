@@ -1,599 +1,382 @@
 /**
- * @file    main_menu.c
- * @brief   Sistem navigasi menu untuk perangkat latihan berbasis STM32.
- *
- * @details Modul ini mengelola seluruh tampilan dan interaksi menu pada LCD ST7735.
- *          Arsitektur menu menggunakan pointer ke struct (MenuPage_t) yang saling
- *          terhubung, sehingga mudah diperluas tanpa mengubah fungsi utama.
- *
- *          Konsep UI terinspirasi dari Flipper Zero:
- *          - Header bar : judul halaman + ikon baterai/status
- *          - Item menu  : ikon pixel + teks + panah navigasi
- *          - Status bar : hint tombol di bagian bawah layar
- *
- * @author  Tim Kamu
- * @version 2.0
+ * @file    app_menu.c
+ * @brief   Menu navigation system for STM32-based training device.
+ * @details Handles page rendering, button navigation, and training session
+ *          launching with a navy dark theme UI.
  */
 
 #include "../../App/Inc/app_menu.h"
+#include "../../Bsp/Inc/bsp_led_rgb.h"
 
 /* =========================================================================
- * DEFINISI WARNA (RGB565)
- * Semua warna didefinisikan di sini agar mudah diganti tanpa cari satu-satu.
- * Format: 0xRRGGBB dikonversi ke RGB565 dengan macro ST7735_COLOR565(r,g,b)
+ * NAVY DARK THEME COLOR PALETTE (RGB565)
  * ========================================================================= */
 
-/** Warna latar belakang utama - biru gelap navy ala Flipper Zero */
-#define COLOR_BG         ST7735_COLOR565(10,  20,  46)
+/** @brief Main background colour (dark navy). */
+#define COLOR_BG         ST7735_COLOR565(15,  23,  42)
+/** @brief Card/surface colour (slightly lighter navy). */
+#define COLOR_SURFACE    ST7735_COLOR565(22,  32,  55)
+/** @brief Header bar background. */
+#define COLOR_HDR_BG     ST7735_COLOR565(18,  28,  50)
+/** @brief Status bar background. */
+#define COLOR_SBAR_BG    ST7735_COLOR565(18,  28,  50)
+/** @brief Selected item highlight background. */
+#define COLOR_SELECT_BG  ST7735_COLOR565(30,  45,  75)
 
-/** Warna teks utama - putih terang */
-#define COLOR_TEXT       ST7735_COLOR565(220, 220, 220)
+/** @brief Primary text colour (near white). */
+#define COLOR_TEXT       ST7735_COLOR565(220, 228, 240)
+/** @brief Secondary/subtitle text colour. */
+#define COLOR_SUBTEXT    ST7735_COLOR565(140, 155, 180)
+/** @brief Hint/disabled text colour. */
+#define COLOR_HINT       ST7735_COLOR565(80,  95,  120)
+/** @brief Selected item text colour (bright white). */
+#define COLOR_SELECT_FG  ST7735_COLOR565(240, 245, 255)
 
-/** Warna aksen - biru terang untuk ikon dan highlight */
-#define COLOR_ACCENT     ST7735_COLOR565(74,  158, 255)
+/** @brief Accent colour (cyan/blue) — used for selection indicator and icons. */
+#define COLOR_ACCENT     ST7735_COLOR565(56,  189, 248)
+/** @brief Separator line colour. */
+#define COLOR_SEP        ST7735_COLOR565(35,  50,  75)
 
-/** Warna item yang sedang dipilih (background inversi) */
-#define COLOR_SELECT_BG  ST7735_COLOR565(230, 230, 230)
-
-/** Warna teks saat item dipilih (harus kontras dengan SELECT_BG) */
-#define COLOR_SELECT_FG  ST7735_COLOR565(10,  20,  46)
-
-/** Warna header bar - biru lebih gelap dari BG */
-#define COLOR_HDR_BG     ST7735_COLOR565(15,  52,  96)
-
-/** Warna status bar - hampir hitam */
-#define COLOR_SBAR_BG    ST7735_COLOR565(10,  22,  40)
-
-/** Warna separator garis horizontal */
-#define COLOR_SEP        ST7735_COLOR565(30,  58,  95)
-
-/** Warna teks hint (sangat redup) */
-#define COLOR_HINT       ST7735_COLOR565(60,  90,  130)
-
-/** Warna hijau untuk status READY / baterai */
-#define COLOR_GREEN      ST7735_COLOR565(74,  222, 128)
-
-/** Warna merah untuk indikator STOP */
-#define COLOR_RED        ST7735_COLOR565(239, 68,  68)
+/** @brief Success/positive indicator (green). */
+#define COLOR_SUCCESS    ST7735_COLOR565(52,  211, 153)
+/** @brief Caution/info indicator (blue). */
+#define COLOR_CAUTION    ST7735_COLOR565(96,  165, 250)
+/** @brief Warning indicator (yellow/amber). */
+#define COLOR_WARNING    ST7735_COLOR565(251, 191, 36)
+/** @brief Danger/error indicator (red). */
+#define COLOR_DANGER     ST7735_COLOR565(248, 113, 113)
 
 /* =========================================================================
- * KONSTANTA LAYOUT
- * Semua posisi elemen UI dihitung dari konstanta ini.
- * Jika ingin mengubah ukuran header, cukup ubah HDR_H saja.
+ * LAYOUT CONSTANTS (in pixels)
  * ========================================================================= */
 
-/** Tinggi header bar (baris paling atas) dalam pixel */
-#define HDR_H       14
-
-/** Tinggi status bar (baris paling bawah) dalam pixel */
-#define SBAR_H      10
-
-/** Posisi Y awal area konten menu (di bawah header) */
-#define CONTENT_Y   (HDR_H + 1)
-
-/** Tinggi setiap baris item menu dalam pixel */
-#define ITEM_H      12
-
-/** Lebar total layar (sesuai konfigurasi ST7735) */
-#define LCD_W       ST7735_WIDTH
-
-/** Tinggi total layar (sesuai konfigurasi ST7735) */
-#define LCD_H       ST7735_HEIGHT
+#define HDR_H       12    /**< Header bar height.                        */
+#define CONTENT_Y   (HDR_H + 1) /**< Y-offset where menu items start.   */
+#define ITEM_H      12    /**< Height of each menu item row.             */
+#define LCD_W       ST7735_WIDTH   /**< Display width.                  */
+#define LCD_H       ST7735_HEIGHT  /**< Display height.                 */
+#define SBAR_H      9     /**< Status bar height (bottom).              */
 
 /* =========================================================================
- * VARIABEL STATE - TOMBOL & NAVIGASI
- * Dideklarasikan static agar tidak polusi namespace global.
+ * GLOBAL STATE VARIABLES
  * ========================================================================= */
 
-static button_t btn_atas;
-static button_t btn_bawah;
-static button_t btn_ok;
+static button_t btn_up;      /**< Button instance for UP navigation.     */
+static button_t btn_down;    /**< Button instance for DOWN navigation.   */
+static button_t btn_ok;      /**< Button instance for OK/Select action.  */
 
-volatile uint8_t point       = 0;
-static   uint8_t init_check  = 0;
-volatile uint8_t training_is = 0;
+volatile uint8_t  point       = 0;   /**< (Reserved for future use).      */
+static   uint8_t  init_check  = 0;   /**< First-run initialisation flag.  */
+volatile uint8_t  training_is = 0;   /**< Flag: 1 = training session active. */
 
-uint8_t page_changed = 1;  // Flag: halaman baru perlu full render
-static uint8_t last_cursor_pos = 0;  // Untuk deteksi perubahan cursor
+uint8_t page_changed    = 1;         /**< Flag: triggers full page redraw. */
+static uint8_t last_cursor_pos = 0;  /**< Previous cursor position (for redraw optimisation). */
 
-volatile uint8_t cursor_pos        = 0;
-const MenuPage_t* current_page = NULL;
+volatile uint8_t    cursor_pos   = 0;       /**< Currently selected item index. */
+const MenuPage_t*   current_page = NULL;    /**< Pointer to the active menu page. */
 
-/* Forward declaration halaman - didefinisikan di bawah */
+/* Forward declarations — defined at the bottom of this file */
 extern const MenuPage_t page_main;
 extern const MenuPage_t page_deltoid;
 extern const MenuPage_t page_pushup;
 
 /* =========================================================================
- * HELPER FUNCTIONS - KOMPONEN GAMBAR UI
- * Semua fungsi di seksi ini bersifat INTERNAL (static).
- * Pisahkan per komponen agar mudah dimodifikasi secara independen.
+ * UI DRAWING HELPERS
  * ========================================================================= */
 
 /**
- * @brief Menggambar garis horizontal tipis sebagai separator.
- *
- * @param y Posisi Y garis dalam pixel.
- */
-static void ui_draw_separator(uint16_t y)
-{
-    ST7735_FillRectangle(0, y, LCD_W, 1, COLOR_SEP);
-}
-
-/**
- * @brief Menggambar header bar di bagian paling atas layar.
- *
- * @details Header menampilkan:
- *          - Judul halaman (kiri)
- *          - Ikon baterai sederhana (kanan, 3 segmen)
- *
- * @param title String judul yang ditampilkan. Maksimal ~11 karakter
- *              agar tidak bertabrakan dengan ikon baterai.
+ * @brief Draw the header bar with title text.
+ * @param title Text to display in the header.
  */
 static void ui_draw_header(const char* title)
 {
-    /* Gambar background header */
     ST7735_FillRectangle(0, 0, LCD_W, HDR_H, COLOR_HDR_BG);
-
-    /* Garis separator bawah header */
-    ui_draw_separator(HDR_H);
-
-    /* Tulis judul - gunakan Font_7x10 agar muat di HDR_H=14px */
-    ST7735_WriteString(4, 2, title, Font_7x10, COLOR_TEXT, COLOR_HDR_BG);
-
-    /* --- Ikon Baterai Dinamis --- */
-    /* Posisi X: Pojok kanan dikurangi lebar baterai. Posisi Y: margin 3px dari atas */
-    uint16_t bat_x = LCD_W - 18;
-    uint16_t bat_y = 3;
-
-    /* Panggil fungsi rendering baterai dari bsp_battery.c */
-    bsp_battery_draw_icon(bat_x, bat_y, COLOR_HDR_BG);
+    ST7735_WriteString(5, 2, title, Font_7x10, COLOR_SUBTEXT, COLOR_HDR_BG);
+    bsp_battery_draw_icon(LCD_W - 18, 2, COLOR_HDR_BG);
 }
 
 /**
- * @brief Menggambar status bar di bagian paling bawah layar.
- *
- * @details Status bar menampilkan hint tombol kepada user.
- *          Desain: background gelap + teks hint kecil.
- *
- * @param hint     String hint yang ditampilkan di kiri.
- * @param dot_color Warna titik status di pojok kanan (gunakan COLOR_GREEN/RED/ACCENT).
+ * @brief Draw the bottom status bar with hint text and indicator dot.
+ * @param hint     Help text (e.g., "UP/DOWN:MOVE  OK:SELECT").
+ * @param dot_color Colour of the small indicator dot (far right).
  */
 static void ui_draw_statusbar(const char* hint, uint16_t dot_color)
 {
     uint16_t y = LCD_H - SBAR_H;
-
-    /* Separator atas status bar */
-    ui_draw_separator(y);
-
-    /* Background status bar */
-    ST7735_FillRectangle(0, y + 1, LCD_W, SBAR_H - 1, COLOR_SBAR_BG);
-
-    /* Hint teks */
-    ST7735_WriteString(4, y + 1, hint, Font_7x10, COLOR_HINT, COLOR_SBAR_BG);
-
-    /* Titik status (indikator LED virtual) di pojok kanan */
-    ST7735_FillRectangle(LCD_W - 8, y + 3, 5, 5, dot_color);
+    ST7735_FillRectangle(0, y, LCD_W, SBAR_H, COLOR_SBAR_BG);
+    // Draw 1-pixel separator line at the top of the status bar
+    ST7735_FillRectangle(0, y, LCD_W, 1, COLOR_SEP);
+    ST7735_WriteString(5, y + 1, hint, Font_7x10, COLOR_HINT, COLOR_SBAR_BG);
+    // Small indicator dot (3x3 pixels) at the right edge
+    ST7735_FillRectangle(LCD_W - 7, y + 3, 3, 3, dot_color);
 }
 
 /**
- * @brief Menggambar satu baris item menu.
- *
- * @details Setiap item terdiri dari:
- *          - Kotak ikon kecil (10x10px) berisi 1 karakter
- *          - Teks nama item
- *          - Panah "›" di kanan jika item punya action
- *          - Efek inversi warna jika item sedang dipilih
- *
- * @param y          Posisi Y baris dalam pixel.
- * @param icon_char  Karakter tunggal untuk ikon (mis: '>', 'D', '+').
- * @param text       Teks nama item menu.
- * @param has_arrow  1 jika tampilkan panah navigasi "›", 0 jika tidak.
- * @param is_selected 1 jika item ini sedang dipilih cursor.
+ * @brief Draw a single menu item row.
+ * @param y           Y-coordinate of the item row.
+ * @param icon_char   Single character to display as an icon.
+ * @param text        Menu item label text.
+ * @param has_arrow   1 = show ">" arrow (indicating submenu/action).
+ * @param is_selected 1 = this item is currently highlighted.
  */
 static void ui_draw_menu_item(uint16_t y, char icon_char,
                                const char* text,
                                uint8_t has_arrow, uint8_t is_selected)
 {
-    /* Tentukan warna berdasarkan state terpilih atau tidak */
-    uint16_t bg   = is_selected ? COLOR_SELECT_BG : COLOR_BG;
-    uint16_t fg   = is_selected ? COLOR_SELECT_FG : COLOR_TEXT;
-    uint16_t icon_fg = is_selected ? COLOR_SELECT_FG : COLOR_ACCENT;
+    uint16_t bg = is_selected ? COLOR_SELECT_BG : COLOR_BG;
+    uint16_t fg = is_selected ? COLOR_SELECT_FG : COLOR_TEXT;
 
-    /* Background seluruh baris */
+    // Fill entire row with background colour
     ST7735_FillRectangle(0, y, LCD_W, ITEM_H, bg);
 
-    /* --- Kotak Ikon --- */
-    /* Border kotak ikon (2px dari kiri) */
+    // Draw accent bar (2px wide) on the left edge if selected
     if (is_selected) {
-        /* Saat dipilih: kotak solid dengan warna BG asli */
-        ST7735_FillRectangle(2, y + 1, 10, 10, COLOR_BG);
-        /* Tulis karakter ikon dengan warna BG */
-        char icon_str[2] = {icon_char, '\0'};
-        ST7735_WriteString(3, y + 1, icon_str, Font_7x10, COLOR_ACCENT, COLOR_BG);
-    } else {
-        /* Normal: outline kotak ikon */
-        ST7735_FillRectangle(2,  y + 1, 10, 10, COLOR_BG);    /* area dalam */
-        ST7735_FillRectangle(2,  y + 1, 10,  1, COLOR_ACCENT); /* atas */
-        ST7735_FillRectangle(2,  y + 10, 10, 1, COLOR_ACCENT); /* bawah */
-        ST7735_FillRectangle(2,  y + 1,  1, 10, COLOR_ACCENT); /* kiri */
-        ST7735_FillRectangle(11, y + 1,  1, 10, COLOR_ACCENT); /* kanan */
-
-        /* Tulis karakter ikon */
-        char icon_str[2] = {icon_char, '\0'};
-        ST7735_WriteString(4, y + 1, icon_str, Font_7x10, icon_fg, COLOR_BG);
+        ST7735_FillRectangle(0, y, 2, ITEM_H, COLOR_ACCENT);
     }
 
-    /* --- Teks Item --- */
-    /* Mulai X=15 (setelah ikon 10px + gap 3px) */
-    ST7735_WriteString(15, y + 1, text, Font_7x10, fg, bg);
+    // Draw icon character (single char in a 2-char string with null terminator)
+    char icon_str[2] = {icon_char, '\0'};
+    ST7735_WriteString(6, y + 1, icon_str, Font_7x10,
+                       is_selected ? COLOR_ACCENT : COLOR_SUBTEXT, bg);
 
-    /* --- Panah Navigasi (jika ada action) --- */
+    // Draw menu item text
+    ST7735_WriteString(20, y + 1, text, Font_7x10, fg, bg);
+
+    // Draw right-arrow indicator if this item has an action/submenu
     if (has_arrow) {
-        ST7735_WriteString(LCD_W - 9, y + 1, ">", Font_7x10, icon_fg, bg);
+        ST7735_WriteString(LCD_W - 10, y + 1, ">", Font_7x10, COLOR_HINT, bg);
     }
-}
-
-/**
- * @brief Menggambar label seksi kecil (mis: "EXERCISE", "DEVICE").
- *
- * @details Label ini muncul di atas kelompok item sebagai kategori.
- *          Font sangat kecil, warna aksen redup.
- *
- * @param y     Posisi Y label.
- * @param label String label seksi.
- */
-static void ui_draw_section_label(uint16_t y, const char* label)
-{
-    /* Area background tipis untuk label seksi */
-    ST7735_FillRectangle(0, y, LCD_W, 9, COLOR_BG);
-    ST7735_WriteString(4, y, label, Font_7x10, COLOR_HINT, COLOR_BG);
 }
 
 /* =========================================================================
- * FUNGSI AKSI NAVIGASI - Tidak diubah dari versi asli
+ * NAVIGATION FUNCTIONS
  * ========================================================================= */
 
-void goto_main_menu(void) {
-    current_page = &page_main;
-    cursor_pos   = 0;
-    page_changed = 1;  // Tambahkan ini
-}
+/** @brief Navigate to the main menu page. */
+void goto_main_menu(void)    { current_page = &page_main;    cursor_pos = 0; page_changed = 1; }
 
-void goto_deltoid_menu(void) {
-    current_page = &page_deltoid;
-    cursor_pos   = 0;
-    page_changed = 1;  // Tambahkan ini
-}
+/** @brief Navigate to the deltoid exercise submenu. */
+void goto_deltoid_menu(void) { current_page = &page_deltoid; cursor_pos = 0; page_changed = 1; }
 
-void goto_pushup_menu(void) {
-    current_page = &page_pushup;
-    cursor_pos   = 0;
-    page_changed = 1;  // Tambahkan ini
-}
+/** @brief Navigate to the push-up exercise submenu. */
+void goto_pushup_menu(void)  { current_page = &page_pushup;  cursor_pos = 0; page_changed = 1; }
 
-void action_kembali(void) {
+/**
+ * @brief Go back to the parent menu page.
+ * @details If the current page has a parent (i.e., it's a submenu),
+ *          navigate to it. Otherwise this does nothing.
+ */
+void action_back(void) {
     if (current_page->parent != NULL) {
         current_page = current_page->parent;
         cursor_pos   = 0;
-        page_changed = 1;  // Tambahkan ini
+        page_changed = 1;
     }
 }
 
 /* =========================================================================
- * FUNGSI AKSI HARDWARE - Tidak diubah dari versi asli (hanya cosmetic)
+ * TRAINING ACTION
  * ========================================================================= */
 
-void action_mulai_deltoid(void)
+/**
+ * @brief Start a deltoid training session.
+ * @details Resets the score, then enters a loop that continuously calls
+ *          add_sensor_data() to process IMU data and run the classifier.
+ *          The loop exits when the OK button is pressed, which sets
+ *          training_is = 0 and marks the device as uncalibrated (so the
+ *          next session will re-run calibration).
+ *
+ *          Note: add_sensor_data() internally handles:
+ *          - Calibration (if not yet done)
+ *          - Reading the inverse quaternion (invQ)
+ *          - Buffering and classifying sensor data
+ *          No need to call these separately.
+ */
+void action_start_deltoid(void)
 {
     training_is = 1;
 
-    /* Bersihkan layar sekali sebelum masuk loop training */
-    ST7735_FillScreenFast(COLOR_BG);
+    // Reset score for a fresh training session
+    extern void tinyml_reset_score(void);
+    tinyml_reset_score();
 
+    // Training loop — runs until OK button is pressed
     while (training_is == 1)
     {
-        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET); /* off red LED  */
-        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_SET);   /* on  green LED */
+        // This single call handles everything: calibration, IMU read,
+        // quaternion correction, buffering, classification, and feedback.
+        add_sensor_data();
 
-        if (calibrated == false) {
-            calibrateQuaternion();
-        }
-
-        Quaternion quarter = invQ();
-
-        /* Kirim data ke Serial Monitor via UART */
-        char buf[100];
-        sprintf(buf, "%.2f,%.2f,%.2f,%.2f\r\n",
-                quarter.w, quarter.x, quarter.y, quarter.z);
-        HAL_UART_Transmit(&huart1, (uint8_t*)buf, strlen(buf), HAL_MAX_DELAY);
-
-        /* --- Tampilan Training Aktif --- */
-        /*
-         * Di sini kita gambar layar training setiap loop.
-         * Catatan: Gambar hanya area yang berubah agar tidak flicker.
-         *          Untuk tampilan yg lebih smooth di masa depan, bisa pakai
-         *          double buffer atau hanya update region tertentu saja.
-         */
-
-        /* Header khusus mode recording */
-        ST7735_FillRectangle(0, 0, LCD_W, HDR_H, ST7735_COLOR565(15, 40, 16));
-        ui_draw_separator(HDR_H);
-        ST7735_WriteString(4, 2, "* RECORDING", Font_7x10,
-                           COLOR_GREEN, ST7735_COLOR565(15, 40, 16));
-
-        /* Data quaternion - tampilkan sebagai stats */
-        uint16_t dy = CONTENT_Y + 4;
-
-        /* Label W (komponen utama rotasi) */
-        ST7735_FillRectangle(0, dy, LCD_W, 22, COLOR_BG);
-        ST7735_WriteString(4, dy, "W", Font_7x10, COLOR_ACCENT, COLOR_BG);
-
-        /* Nilai W dengan font besar */
-        char val_buf[16];
-        sprintf(val_buf, "%.3f", quarter.w);
-        ST7735_WriteString(14, dy, val_buf, Font_11x18, COLOR_GREEN, COLOR_BG);
-        dy += 24;
-
-        /* Label XYZ dalam satu baris */
-        ST7735_FillRectangle(0, dy, LCD_W, 12, COLOR_BG);
-        ST7735_WriteString(4,  dy, "X", Font_7x10, COLOR_ACCENT, COLOR_BG);
-        ST7735_WriteString(44, dy, "Y", Font_7x10, COLOR_ACCENT, COLOR_BG);
-        ST7735_WriteString(84, dy, "Z", Font_7x10, COLOR_ACCENT, COLOR_BG);
-        dy += 11;
-
-        /* Nilai XYZ */
-        ST7735_FillRectangle(0, dy, LCD_W, 10, COLOR_BG);
-        char x_buf[10], y_buf[10], z_buf[10];
-        sprintf(x_buf, "%.2f", quarter.x);
-        sprintf(y_buf, "%.2f", quarter.y);
-        sprintf(z_buf, "%.2f", quarter.z);
-        ST7735_WriteString(2,  dy, x_buf, Font_7x10, COLOR_TEXT, COLOR_BG);
-        ST7735_WriteString(42, dy, y_buf, Font_7x10, COLOR_TEXT, COLOR_BG);
-        ST7735_WriteString(82, dy, z_buf, Font_7x10, COLOR_TEXT, COLOR_BG);
-        dy += 14;
-
-        /* Separator */
-        ui_draw_separator(dy);
-        dy += 3;
-
-        /* Hint status bar bawah */
-        ui_draw_statusbar("OK=STOP", COLOR_RED);
-
-        HAL_Delay(10);
-
-        /* Cek tombol OK untuk berhenti */
+        // Check for OK button press to exit training
         if (button_read(&btn_ok) == 1) {
-            training_is = 0;
-            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET); /* off green */
-            HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);   /* on  red   */
-            calibrated = false;
-            ST7735_FillScreenFast(COLOR_BG);
+            training_is = 0;          // Exit the training loop
+            calibrated  = false;      // Force re-calibration on next session
         }
     }
 }
 
 /* =========================================================================
- * DATA MENU - Tidak diubah dari versi asli
+ * MENU PAGE DEFINITIONS
  * ========================================================================= */
 
+/* --- Push-Up Submenu --- */
 const MenuItem_t items_pushup[] = {
-    {"MULAI PUSHUP", action_mulai_deltoid},
-    {"KEMBALI",      action_kembali}
+    {"START",   action_start_deltoid},  // Launch training session
+    {"SETTING", NULL},                   // Placeholder — no action yet
+    {"BACK",    action_back}             // Return to main menu
 };
 const MenuPage_t page_pushup = {
-    "Push Up", items_pushup, 2, &page_main
+    "PUSH UP", items_pushup, 3, &page_main
 };
 
+/* --- Deltoid Submenu --- */
 const MenuItem_t items_deltoid[] = {
-    {"MULAI",   action_mulai_deltoid},
-    {"Setting", NULL},
-    {"KEMBALI", action_kembali}
+    {"START",   action_start_deltoid},  // Launch training session
+    {"SETTING", NULL},                   // Placeholder — no action yet
+    {"BACK",    action_back}             // Return to main menu
 };
 const MenuPage_t page_deltoid = {
-    "Deltoid", items_deltoid, 3, &page_main
+    "DELTOID", items_deltoid, 3, &page_main
 };
 
+/* --- Main Menu (top level) --- */
 const MenuItem_t items_main[] = {
-    {"Deltoid", goto_deltoid_menu},
-    {"Push UP", goto_pushup_menu}
+    {"Deltoid", goto_deltoid_menu},     // Navigate to deltoid submenu
+    {"Push Up", goto_pushup_menu}       // Navigate to push-up submenu
 };
 const MenuPage_t page_main = {
-    "TRAINING", items_main, 2, NULL
+    "TRAINING", items_main, 2, NULL     // NULL = no parent (top-level page)
 };
 
 /* =========================================================================
- * PETA IKON PER ITEM MENU
- *
- * Karena struct MenuItem_t tidak kita ubah (untuk menjaga kompatibilitas),
- * kita map ikon menggunakan array terpisah berdasarkan INDEX item.
- *
- * Cara extend: tambah karakter ikon sesuai urutan item di items_xxx[].
- * Gunakan karakter ASCII yang ada di Font_7x10 (lihat fonts.c).
- *
- * Karakter yang tersedia di Font_7x10 untuk ikon:
- *  '>' = play/mulai      '+' = tambah       '-' = minus
- *  '<' = kembali         '=' = setting      '*' = aktif/bintang
- *  '?' = bantuan         '!' = peringatan   '#' = menu
+ * ICON MAPPING
  * ========================================================================= */
 
-/** Ikon untuk halaman main menu (urutan = urutan items_main[]) */
+/** @brief Icons for main menu items: D = Deltoid, P = Push Up. */
 static const char icons_main[]    = {'D', 'P'};
-
-/** Ikon untuk halaman deltoid menu */
-static const char icons_deltoid[] = {'>', '=', '<'};
-
-/** Ikon untuk halaman pushup menu */
-static const char icons_pushup[]  = {'>', '<'};
+/** @brief Icons for deltoid submenu: > = action, * = setting, < = back. */
+static const char icons_deltoid[] = {'>', '*', '<'};
+/** @brief Icons for push-up submenu. */
+static const char icons_pushup[]  = {'>', '*', '<'};
 
 /**
- * @brief Mendapatkan karakter ikon untuk item tertentu pada halaman saat ini.
- *
- * @details Fungsi ini mencocokkan halaman aktif dengan array ikon yang sesuai.
- *          Jika halaman tidak dikenal, karakter '>' digunakan sebagai fallback.
- *
- * @param index Index item menu (0-based).
- * @return Karakter ikon yang akan ditampilkan.
+ * @brief Get the icon character for a menu item based on current page.
+ * @param index Item index within the current page.
+ * @return Single character to display as the item's icon.
  */
 static char get_item_icon(uint8_t index)
 {
-    if (current_page == &page_main    && index < sizeof(icons_main))
-        return icons_main[index];
-
-    if (current_page == &page_deltoid && index < sizeof(icons_deltoid))
-        return icons_deltoid[index];
-
-    if (current_page == &page_pushup  && index < sizeof(icons_pushup))
-        return icons_pushup[index];
-
-    return '>'; /* fallback default */
+    if (current_page == &page_main    && index < sizeof(icons_main))    return icons_main[index];
+    if (current_page == &page_deltoid && index < sizeof(icons_deltoid)) return icons_deltoid[index];
+    if (current_page == &page_pushup  && index < sizeof(icons_pushup))  return icons_pushup[index];
+    return '>';  // Default fallback icon
 }
 
 /* =========================================================================
- * FUNGSI UTAMA - TRAINING MENU
- * Ini adalah fungsi yang dipanggil dari while(1) di main.c.
- * Struktur utama SAMA dengan versi asli, hanya bagian render yang diperbarui.
+ * MAIN MENU FUNCTION (call repeatedly from main loop)
  * ========================================================================= */
 
 /**
- * @brief Fungsi utama sistem menu. Panggil di dalam while(1) pada main.c.
- *
- * @details Alur kerja:
- *          1. Inisialisasi tombol dan halaman awal (hanya 1x saat boot).
- *          2. Baca input tombol (atas/bawah/ok).
- *          3. Render seluruh UI (header, items, statusbar).
- *
- *          Anti-flicker: kursor lama dihapus dengan menimpa baris itu saja,
- *          bukan clear screen penuh. Hanya item yang berubah yang digambar ulang.
+ * @brief Main menu loop — handles rendering and button input.
+ * @details Call this function repeatedly in the main while(1) loop.
+ *          On first call, it initialises buttons and the display.
+ *          It handles:
+ *          - UP/DOWN button navigation with single-item redraw
+ *          - OK button to trigger menu actions
+ *          - Full page redraw when page_changed flag is set
  */
 void training_menu(void)
 {
-    /* --- INISIALISASI (hanya 1x saat boot) --- */
+    // --- First-run initialisation ---
     if (init_check == 0) {
-        button_init(&btn_atas,  GPIOB, GPIO_PIN_12);
-        button_init(&btn_bawah, GPIOB, GPIO_PIN_13);
-        button_init(&btn_ok,    GPIOB, GPIO_PIN_14);
-
-        current_page = &page_main;
+        button_init(&btn_up,   GPIOB, GPIO_PIN_12);  // PB12 = UP
+        button_init(&btn_down, GPIOB, GPIO_PIN_13);  // PB13 = DOWN
+        button_init(&btn_ok,   GPIOB, GPIO_PIN_14);  // PB14 = OK
+        current_page = &page_main;                    // Start at main menu
         init_check   = 1;
-        page_changed = 1;  // Force full render pertama kali
-
-        /* Clear screen dengan warna background tema */
-        ST7735_FillScreenFast(COLOR_BG);
+        page_changed = 1;                             // Force initial draw
+        ST7735_FillScreenFast(COLOR_BG);              // Clear screen
     }
 
-    if (current_page == NULL) return;
+    if (current_page == NULL) return;  // Safety: no page loaded
 
-    /* =========================================================
-     * BAGIAN 1: BACA TOMBOL (DENGAN DEBOUNCE SEDERHANA)
-     * ========================================================= */
+    // --- Button state tracking (edge detection) ---
+    static uint8_t btn_up_last   = 0;
+    static uint8_t btn_down_last = 0;
+    static uint8_t btn_ok_last   = 0;
 
-    static uint8_t btn_atas_last = 0;
-    static uint8_t btn_bawah_last = 0;
-    static uint8_t btn_ok_last = 0;
+    uint8_t btn_up_now   = button_read(&btn_up);
+    uint8_t btn_down_now = button_read(&btn_down);
+    uint8_t btn_ok_now   = button_read(&btn_ok);
 
-    uint8_t btn_atas_now = button_read(&btn_atas);
-    uint8_t btn_bawah_now = button_read(&btn_bawah);
-    uint8_t btn_ok_now = button_read(&btn_ok);
+    // Detect rising edges (press, not hold)
+    uint8_t btn_up_pressed   = (btn_up_now   == 1 && btn_up_last   == 0);
+    uint8_t btn_down_pressed = (btn_down_now == 1 && btn_down_last == 0);
+    uint8_t btn_ok_pressed   = (btn_ok_now   == 1 && btn_ok_last   == 0);
 
-    // Deteksi rising edge (transisi dari 0 ke 1)
-    uint8_t btn_atas_pressed = (btn_atas_now == 1 && btn_atas_last == 0);
-    uint8_t btn_bawah_pressed = (btn_bawah_now == 1 && btn_bawah_last == 0);
-    uint8_t btn_ok_pressed = (btn_ok_now == 1 && btn_ok_last == 0);
+    // Store current state for next iteration's edge detection
+    btn_up_last   = btn_up_now;
+    btn_down_last = btn_down_now;
+    btn_ok_last   = btn_ok_now;
 
-    // Update last state
-    btn_atas_last = btn_atas_now;
-    btn_bawah_last = btn_bawah_now;
-    btn_ok_last = btn_ok_now;
-
-    if (btn_atas_pressed)
-    {
+    // --- Button: UP ---
+    if (btn_up_pressed) {
         uint8_t old_pos = cursor_pos;
-
-        if (cursor_pos > 0) {
-            cursor_pos--;
-        } else {
-            cursor_pos = current_page->num_items - 1;
-        }
-
-        // Update hanya 2 baris yang berubah
-        uint16_t old_y = CONTENT_Y + (old_pos  * ITEM_H);
+        // Wrap around: if at first item, go to last item
+        cursor_pos = (cursor_pos > 0) ? cursor_pos - 1 : current_page->num_items - 1;
+        uint16_t old_y = CONTENT_Y + (old_pos    * ITEM_H);
         uint16_t new_y = CONTENT_Y + (cursor_pos * ITEM_H);
-
-        ui_draw_menu_item(old_y,
-                          get_item_icon(old_pos),
+        // Redraw old item as unselected
+        ui_draw_menu_item(old_y, get_item_icon(old_pos),
                           current_page->items[old_pos].text,
-                          current_page->items[old_pos].action != NULL,
-                          0);
-
-        ui_draw_menu_item(new_y,
-                          get_item_icon(cursor_pos),
+                          current_page->items[old_pos].action != NULL, 0);
+        // Redraw new item as selected
+        ui_draw_menu_item(new_y, get_item_icon(cursor_pos),
                           current_page->items[cursor_pos].text,
-                          current_page->items[cursor_pos].action != NULL,
-                          1);
+                          current_page->items[cursor_pos].action != NULL, 1);
     }
-    else if (btn_bawah_pressed)
-    {
+    // --- Button: DOWN ---
+    else if (btn_down_pressed) {
         uint8_t old_pos = cursor_pos;
-
-        if (cursor_pos < current_page->num_items - 1) {
-            cursor_pos++;
-        } else {
-            cursor_pos = 0;
-        }
-
-        uint16_t old_y = CONTENT_Y + (old_pos   * ITEM_H);
+        // Wrap around: if at last item, go to first item
+        cursor_pos = (cursor_pos < current_page->num_items - 1) ? cursor_pos + 1 : 0;
+        uint16_t old_y = CONTENT_Y + (old_pos    * ITEM_H);
         uint16_t new_y = CONTENT_Y + (cursor_pos * ITEM_H);
-
-        ui_draw_menu_item(old_y,
-                          get_item_icon(old_pos),
+        // Redraw old item as unselected
+        ui_draw_menu_item(old_y, get_item_icon(old_pos),
                           current_page->items[old_pos].text,
-                          current_page->items[old_pos].action != NULL,
-                          0);
-
-        ui_draw_menu_item(new_y,
-                          get_item_icon(cursor_pos),
+                          current_page->items[old_pos].action != NULL, 0);
+        // Redraw new item as selected
+        ui_draw_menu_item(new_y, get_item_icon(cursor_pos),
                           current_page->items[cursor_pos].text,
-                          current_page->items[cursor_pos].action != NULL,
-                          1);
+                          current_page->items[cursor_pos].action != NULL, 1);
     }
-    else if (btn_ok_pressed)
-    {
+    // --- Button: OK ---
+    else if (btn_ok_pressed) {
+        // Execute the action associated with the selected item (if any)
         if (current_page->items[cursor_pos].action != NULL) {
             current_page->items[cursor_pos].action();
-            page_changed = 1;  // Force full render setelah navigasi
+            page_changed = 1;  // Trigger full redraw when we return
         }
     }
 
-    /* =========================================================
-     * BAGIAN 2: RENDER UI (HANYA JIKA DIPERLUKAN)
-     * ========================================================= */
-
-    // Render full hanya saat halaman berubah
+    // --- Full page redraw (only when page_changed flag is set) ---
     if (page_changed) {
-        page_changed = 0;
+        page_changed    = 0;
         last_cursor_pos = cursor_pos;
+        ST7735_FillScreenFast(COLOR_BG);               // Clear screen
+        ui_draw_header(current_page->title);            // Draw header
 
-        // Clear screen dengan background color (lebih cepat dari fill)
-        ST7735_FillScreenFast(COLOR_BG);
-
-        // Header bar
-        ui_draw_header(current_page->title);
-
-        // Semua item menu (hanya sekali saat halaman load)
+        // Draw all menu items
         for (uint8_t i = 0; i < current_page->num_items; i++) {
             uint16_t item_y = CONTENT_Y + (i * ITEM_H);
-            ui_draw_menu_item(
-                item_y,
-                get_item_icon(i),
-                current_page->items[i].text,
-                current_page->items[i].action != NULL,
-                (cursor_pos == i)
-            );
+            ui_draw_menu_item(item_y, get_item_icon(i),
+                              current_page->items[i].text,
+                              current_page->items[i].action != NULL,
+                              (cursor_pos == i));       // Highlight if selected
         }
 
-        // Status bar
-        ui_draw_statusbar("U/D:GERAK  OK:PILIH", COLOR_GREEN);
+        // Draw bottom status bar with navigation hints
+        ui_draw_statusbar("UP/DOWN:MOVE  OK:SELECT", COLOR_SUCCESS);
     }
 }
-

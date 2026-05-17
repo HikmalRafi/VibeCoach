@@ -36,6 +36,7 @@ extern "C"{
 #include "../../App/Inc/app_menu.h"
 #include "../../App/Inc/app_splash.h"
 #include "../../Bsp/Inc/bsp_debounce_button.h"
+#include "../../../Bsp/Inc/bsp_led_rgb.h"
 }
 /* USER CODE END Includes */
 
@@ -107,6 +108,8 @@ int main(void)
   MX_TIM1_Init();
   MX_SPI1_Init();
   MX_ADC1_Init();
+  MX_TIM3_Init();
+  MX_TIM2_Init();
 
   /* USER CODE BEGIN 2 */
   HAL_GPIO_WritePin(LCD_BL_PORT, LCD_BL_PIN, GPIO_PIN_SET);
@@ -120,8 +123,10 @@ int main(void)
   data = 0x00;
   stm32_i2c_write(0x68, MPU9250_PWR_MGMT_1, 1, &data);
 
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET); //off green led
-  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);	//on red led
+  HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);  // motor getar
+  HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);  // LED Green
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);  // LED Red
+  HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);  // LED Blue
   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
   app_splash_show_boot();
 

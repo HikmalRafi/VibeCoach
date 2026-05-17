@@ -68,6 +68,10 @@ void Error_Handler(void);
 #define RST_GPIO_Port GPIOA
 #define D_C_Pin GPIO_PIN_3
 #define D_C_GPIO_Port GPIOA
+#define G_Pin GPIO_PIN_5
+#define G_GPIO_Port GPIOA
+#define R_Pin GPIO_PIN_6
+#define R_GPIO_Port GPIOA
 #define PWR_BTN_Pin GPIO_PIN_1
 #define PWR_BTN_GPIO_Port GPIOB
 #define PWR_BTN_EXTI_IRQn EXTI1_IRQn

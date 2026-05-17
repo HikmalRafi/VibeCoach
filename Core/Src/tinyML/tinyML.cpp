@@ -1,89 +1,478 @@
-#include "tinyML/tinyML.h"
-#include <math.h>
-#include <string.h>
+/* ==========================================================================
+ * tinyML.cpp  —  AI Motion Correction (Gym Form Detector)
+ *
+ * Hardware:
+ *   MCU clock  : 50 MHz (HSE)
+ *   TIM1 PSC=49, ARR=999 → 1 kHz  → PA8  (Vibration motor)
+ *   TIM2 CH1              → PA5  (LED Green)
+ *   TIM3 CH1              → PA6  (LED Red)
+ *   TIM3 CH3              → PB0  (LED Blue)
+ *
+ * Required in main() before while(1):
+ *   HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+ *   HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+ *   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
+ *   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
+ *
+ * Score Accumulator Logic:
+ *   wrong_move   → score +2
+ *   correct/idle → score -1
+ *   Score is clamped between 0 and SCORE_MAX
+ *
+ *   Score 0 – 3   → no vibration feedback, LED depends on label
+ *   Score 4 – 7   → small vibration
+ *   Score 8 – 11  → medium vibration
+ *   Score >= 12   → strong vibration
+ *
+ * RGB LED Behaviour:
+ *   idle / startup         → off
+ *   correct & score == 0   → green
+ *   score low-medium       → blue   (caution, occasional/mixed errors)
+ *   score >= SCORE_LVL_MEDIUM → red
+ * ========================================================================== */
+
+#include <tinyML/tinyML.h>
+#include "usart.h"
+#include "main.h"
 #include "edge-impulse-sdk/classifier/ei_run_classifier.h"
 
-// Ambil handle timer dari main.c untuk PWM getar
-extern TIM_HandleTypeDef htim1;
-
-// Variabel Global (Hapus static agar bisa diakses getter)
-WrongIntensity current_intensity = LEVEL_NONE;
-float ema_score = 0.0f;
-
-// Gunakan extern "C" untuk fungsi yang butuh koneksi ke file .c
+/* C-linkage for IMU driver and calibration modules */
 extern "C" {
-    #include "../../../IMU/Inc/imu_calibration.h"
-    #include "../../../IMU/Inc/imu_mpu9250_drive.h"
-
-    WrongIntensity get_current_intensity(void) { return current_intensity; }
-    float get_ema_score(void) { return ema_score; }
+#include "../../IMU/Inc/imu_calibration.h"
+#include "../../IMU/Inc/imu_mpu9250_drive.h"
 }
 
-// Konfigurasi EMA & Threshold
-#define LABEL_CORRECT_MOVE  0
-#define LABEL_IDLE          1
-#define LABEL_WRONG_MOVE    2
-#define EMA_ALPHA_ATTACK    0.80f
-#define EMA_ALPHA_DECAY     0.18f
-#define EMA_ALPHA_CORRECTING 0.50f
-#define PWM_KOREKSI         380
-#define PWM_WASPADA         700
-#define PWM_BAHAYA          950
+/* --------------------------------------------------------------------------
+ * Configuration Constants
+ * -------------------------------------------------------------------------- */
 
-// Buffer data sensor
-float sensor_buffer[EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE];
+/** @brief Minimum confidence for a classification to be accepted. */
+#define CONFIDENCE_THRESHOLD     0.70f
 
-void update_vibration(WrongIntensity level) {
-    static uint32_t vib_timer = 0;
-    static uint8_t pattern_step = 0;
-    uint32_t now = HAL_GetTick();
+/** @brief Score added when a wrong move is detected. */
+#define SCORE_INC_WRONG          2
+/** @brief Score subtracted when a correct move or idle is detected. */
+#define SCORE_DEC_CORRECT        1
+/** @brief Maximum possible error score (upper clamp). */
+#define SCORE_MAX                20
 
-    if (now < vib_timer) return;
+/** @brief Score threshold for small vibration feedback. */
+#define SCORE_LVL_SMALL          4
+/** @brief Score threshold for medium vibration feedback. */
+#define SCORE_LVL_MEDIUM         8
+/** @brief Score threshold for strong vibration feedback. */
+#define SCORE_LVL_STRONG         12
 
-    switch (level) {
-        case LEVEL_KOREKSI:
-            if (pattern_step == 0) {
-                __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, PWM_KOREKSI);
-                vib_timer = now + 120;
-                pattern_step = 1;
-            } else {
-                __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
-                vib_timer = now + 650;
-                pattern_step = 0;
-            }
-            break;
-        case LEVEL_BAHAYA:
-            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, PWM_BAHAYA);
-            break;
+/* PWM Vibration Duty Cycle (ARR = 999) */
+#define VIB_PWM_OFF              0     /**< Motor off (0% duty).         */
+#define VIB_PWM_SMALL            300   /**< ~30% duty — gentle nudge.   */
+#define VIB_PWM_MEDIUM           550   /**< ~55% duty — noticeable.     */
+#define VIB_PWM_STRONG           820   /**< ~82% duty — hard to ignore. */
+
+/** @brief Cooldown period after strong vibration (ms). Prevents spam. */
+#define COOLDOWN_STRONG_MS       3000
+/** @brief Cooldown period after medium vibration (ms). */
+#define COOLDOWN_MEDIUM_MS       1500
+
+/*
+ * PWM LED — adjust LED_ARR to match your TIM2/TIM3 ARR.
+ * Reduce LED_FULL if the LEDs are too bright.
+ */
+#define LED_ARR                  999   /**< Timer ARR for LED PWM.    */
+#define LED_FULL                 (LED_ARR) /**< 100% duty — max brightness. */
+#define LED_OFF_VAL              0     /**< 0% duty — LED off.       */
+
+/* --------------------------------------------------------------------------
+ * Timer Handles (defined in main, generated by CubeMX)
+ * -------------------------------------------------------------------------- */
+
+extern TIM_HandleTypeDef htim1;   /* Vibration PA8            */
+extern TIM_HandleTypeDef htim2;   /* LED Green  PA5 — CH1     */
+extern TIM_HandleTypeDef htim3;   /* LED Red    PA6 — CH1     */
+                                  /* LED Blue   PB0 — CH3     */
+
+/* --------------------------------------------------------------------------
+ * RGB LED Controller
+ * -------------------------------------------------------------------------- */
+
+/** @brief Available LED colour states. */
+typedef enum : uint8_t {
+    LED_COLOR_OFF = 0,    /**< All LEDs off.                        */
+    LED_COLOR_GREEN,      /**< Green only — good form.              */
+    LED_COLOR_BLUE,       /**< Blue only — caution / warning.       */
+    LED_COLOR_RED         /**< Red only — bad form, correct immediately. */
+} LedColor_t;
+
+/** @brief Currently displayed LED colour (cached to avoid redundant writes). */
+static LedColor_t s_current_led = LED_COLOR_OFF;
+
+/**
+ * @brief Set raw PWM values for RGB channels.
+ * @param r Red channel duty (TIM3 CH1)
+ * @param g Green channel duty (TIM2 CH1)
+ * @param b Blue channel duty (TIM3 CH3)
+ */
+static inline void led_set_raw(uint32_t r, uint32_t g, uint32_t b)
+{
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, r);  /* R = TIM3_CH1 */
+    __HAL_TIM_SET_COMPARE(&htim2, TIM_CHANNEL_1, g);  /* G = TIM2_CH1 */
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, b);  /* B = TIM3_CH3 */
+}
+
+/**
+ * @brief Switch LED to a specific colour (with caching to skip redundant updates).
+ * @param color Desired colour state.
+ */
+static void led_set_color(LedColor_t color)
+{
+    if (color == s_current_led) return;  // Already displaying this colour
+    s_current_led = color;
+
+    switch (color) {
+        case LED_COLOR_GREEN:
+            led_set_raw(LED_OFF_VAL, LED_FULL,    LED_OFF_VAL); break;
+        case LED_COLOR_BLUE:
+            led_set_raw(LED_OFF_VAL, LED_OFF_VAL, LED_FULL);    break;
+        case LED_COLOR_RED:
+            led_set_raw(LED_FULL,    LED_OFF_VAL, LED_OFF_VAL); break;
+        case LED_COLOR_OFF:
         default:
-            __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
-            break;
+            led_set_raw(LED_OFF_VAL, LED_OFF_VAL, LED_OFF_VAL); break;
     }
 }
 
-void add_sensor_data() {
-    static uint32_t last_sample = 0;
-    if (HAL_GetTick() - last_sample < 10) return;
-    last_sample = HAL_GetTick();
+/* --------------------------------------------------------------------------
+ * Vibration State Machine (non-blocking)
+ * -------------------------------------------------------------------------- */
 
-    if (!calibrated) return;
+/** @brief Internal phases of a vibration pulse sequence. */
+typedef enum : uint8_t {
+    VIB_IDLE_STATE = 0,   /**< No vibration active.                  */
+    VIB_PULSE_ON,         /**< Motor currently vibrating.            */
+    VIB_PULSE_OFF         /**< Pause between pulses.                 */
+} VibPhase;
 
+/**
+ * @brief Vibration controller state.
+ * @details Manages multi-pulse vibration sequences with cooldown between
+ *          strong alerts. Call vib_start() to request a sequence, then
+ *          vib_update() regularly in the main loop.
+ */
+typedef struct {
+    VibPhase phase;           /**< Current phase of the sequence.       */
+    uint8_t  pulses_total;    /**< Number of pulses requested.          */
+    uint8_t  pulses_done;     /**< Number of pulses completed so far.   */
+    uint16_t pwm_duty;        /**< PWM duty cycle for the pulses.       */
+    uint32_t on_ms;           /**< Duration of each ON phase (ms).      */
+    uint32_t off_ms;          /**< Duration of each OFF phase (ms).     */
+    uint32_t last_tick;       /**< Timestamp of last phase transition.  */
+    bool     active;          /**< True if a sequence is in progress.   */
+    uint32_t cooldown_until;  /**< Timestamp until new sequences are blocked. */
+} VibCtrl;
+
+static VibCtrl s_vib = {};  /**< Global vibration controller instance. */
+
+/**
+ * @brief Request a vibration sequence.
+ * @details Respects cooldown — if a cooldown is active, the request is ignored.
+ *          Also ignores requests if a sequence is already running.
+ * @param duty   PWM duty cycle (0-999) — controls vibration intensity.
+ * @param pulses Number of ON/OFF cycles to emit.
+ * @param on_ms  Duration of each vibration pulse (ms).
+ * @param off_ms Duration of each pause between pulses (ms).
+ */
+static void vib_start(uint16_t duty, uint8_t pulses, uint32_t on_ms, uint32_t off_ms)
+{
+    if (HAL_GetTick() < s_vib.cooldown_until) return;  // Cooldown active
+    if (s_vib.active)                          return;  // Already running
+
+    s_vib.phase        = VIB_PULSE_ON;
+    s_vib.pulses_total = pulses;
+    s_vib.pulses_done  = 0;
+    s_vib.pwm_duty     = duty;
+    s_vib.on_ms        = on_ms;
+    s_vib.off_ms       = off_ms;
+    s_vib.last_tick    = HAL_GetTick();
+    s_vib.active       = true;
+
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, duty);  // Motor ON immediately
+}
+
+/**
+ * @brief Update the vibration state machine (call every loop iteration).
+ * @details Transitions through ON→OFF→ON phases based on elapsed time.
+ *          When all pulses complete, sets cooldown based on intensity.
+ */
+static void vib_update(void)
+{
+    if (!s_vib.active) return;
+
+    uint32_t elapsed = HAL_GetTick() - s_vib.last_tick;
+
+    switch (s_vib.phase) {
+        case VIB_PULSE_ON:
+            // ON phase complete → turn motor OFF
+            if (elapsed >= s_vib.on_ms) {
+                __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, VIB_PWM_OFF);
+                s_vib.pulses_done++;
+                s_vib.last_tick = HAL_GetTick();
+
+                if (s_vib.pulses_done >= s_vib.pulses_total) {
+                    // All pulses delivered — sequence complete
+                    s_vib.active = false;
+                    s_vib.phase  = VIB_IDLE_STATE;
+                    // Set cooldown to prevent immediate re-trigger
+                    if (s_vib.pwm_duty >= VIB_PWM_STRONG) {
+                        s_vib.cooldown_until = HAL_GetTick() + COOLDOWN_STRONG_MS;
+                    } else if (s_vib.pwm_duty >= VIB_PWM_MEDIUM) {
+                        s_vib.cooldown_until = HAL_GetTick() + COOLDOWN_MEDIUM_MS;
+                    }
+                } else {
+                    s_vib.phase = VIB_PULSE_OFF;  // More pulses to go
+                }
+            }
+            break;
+
+        case VIB_PULSE_OFF:
+            // OFF phase complete → turn motor ON for next pulse
+            if (elapsed >= s_vib.off_ms) {
+                __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, s_vib.pwm_duty);
+                s_vib.phase     = VIB_PULSE_ON;
+                s_vib.last_tick = HAL_GetTick();
+            }
+            break;
+
+        default: break;  // VIB_IDLE_STATE — nothing to do
+    }
+}
+
+/* --------------------------------------------------------------------------
+ * UART Logging (printf-style)
+ * -------------------------------------------------------------------------- */
+
+/**
+ * @brief Core UART print function (called by ei_printf).
+ * @param fmt Format string
+ * @param argp Variable argument list
+ */
+extern "C" void vprint(const char *fmt, va_list argp)
+{
+    char string[200];
+    if (vsprintf(string, fmt, argp) > 0) {
+        HAL_UART_Transmit(&huart1, (uint8_t *)string, strlen(string), 0xFFFFFF);
+    }
+}
+
+/**
+ * @brief Print formatted string over UART (used by Edge Impulse SDK).
+ * @param format printf-style format string
+ * @param ...    Variable arguments
+ */
+void ei_printf(const char *format, ...)
+{
+    va_list myargs;
+    va_start(myargs, format);
+    vprint(format, myargs);
+    va_end(myargs);
+}
+
+/* --------------------------------------------------------------------------
+ * Sensor Buffer & Classifier State
+ * -------------------------------------------------------------------------- */
+
+/** @brief Buffer for accumulating sensor data before classification. */
+static float s_sensor_buf[EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE];
+/** @brief Current write position in the sensor buffer. */
+static int   s_buf_idx     = 0;
+/** @brief Accumulated error score (0 = perfect, higher = worse form). */
+static int   s_wrong_score = 0;
+
+/** @brief Classification labels used for feedback logic. */
+typedef enum : uint8_t {
+    LAST_NONE = 0,      /**< No classification yet (startup). */
+    LAST_IDLE,          /**< User is idle / resting.          */
+    LAST_CORRECT,       /**< Correct movement detected.       */
+    LAST_WRONG          /**< Wrong movement detected.         */
+} LastLabel_t;
+
+static LastLabel_t s_last_label = LAST_NONE;
+
+/* --------------------------------------------------------------------------
+ * Feedback Controller: Vibration + LED
+ *
+ * LED Logic:
+ *   idle / startup              → off
+ *   correct + score == 0        → green  (perfect form)
+ *   score 1–(MEDIUM-1) / wrong  → blue   (caution, minor errors)
+ *   score >= SCORE_LVL_MEDIUM   → red    (bad form, needs immediate correction)
+ * -------------------------------------------------------------------------- */
+
+/**
+ * @brief Apply haptic and visual feedback based on current score and label.
+ * @details Selects vibration intensity and LED colour. Called after each
+ *          classification result is processed and the score is updated.
+ */
+static void apply_feedback(void)
+{
+    /* --- Vibration Feedback --- */
+    if (s_wrong_score >= SCORE_LVL_STRONG) {
+        // Strong: 3 long pulses — hard to ignore
+        vib_start(VIB_PWM_STRONG, 3, 300, 150);
+        ei_printf("[ALERT] Perbaiki gerakan! skor=%d\r\n", s_wrong_score);
+    } else if (s_wrong_score >= SCORE_LVL_MEDIUM) {
+        // Medium: 2 pulses — warning
+        vib_start(VIB_PWM_MEDIUM, 2, 200, 150);
+        ei_printf("[WARN]  Mulai salah.      skor=%d\r\n", s_wrong_score);
+    } else if (s_wrong_score >= SCORE_LVL_SMALL) {
+        // Small: 1 short pulse — gentle reminder
+        vib_start(VIB_PWM_SMALL,  1, 150, 0);
+        ei_printf("[INFO]  Perhatikan.       skor=%d\r\n", s_wrong_score);
+    }
+
+    /* --- LED Feedback --- */
+    if (s_last_label == LAST_IDLE || s_last_label == LAST_NONE) {
+        // Idle or just started — no LED
+        led_set_color(LED_COLOR_OFF);
+
+    } else if (s_last_label == LAST_CORRECT && s_wrong_score == 0) {
+        // Perfect form — green
+        led_set_color(LED_COLOR_GREEN);
+
+    } else if (s_wrong_score >= SCORE_LVL_MEDIUM) {
+        // High error score — red (needs correction)
+        led_set_color(LED_COLOR_RED);
+
+    } else {
+        // Score > 0 but still low — blue (caution zone)
+        led_set_color(LED_COLOR_BLUE);
+    }
+}
+
+/* --------------------------------------------------------------------------
+ * Session Reset
+ * -------------------------------------------------------------------------- */
+
+/**
+ * @brief Reset all state: score, buffer, vibration, and LED.
+ * @details Call this to start a fresh session (e.g., when the user
+ *          presses a reset button or a new exercise begins).
+ */
+extern "C" void tinyml_reset_score(void)
+{
+    s_wrong_score        = 0;
+    s_buf_idx            = 0;
+    s_last_label         = LAST_NONE;
+    s_vib.active         = false;
+    s_vib.cooldown_until = 0;
+
+    // Force motor off immediately
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, VIB_PWM_OFF);
+
+    // Force LED update (bypass cache) — turn everything off
+    s_current_led = LED_COLOR_RED;   /* invalidate cache */
+    led_set_color(LED_COLOR_OFF);
+}
+
+/* --------------------------------------------------------------------------
+ * Main Entry Point — called periodically from main loop
+ * -------------------------------------------------------------------------- */
+
+/**
+ * @brief Process one sensor sample, accumulate, classify, and give feedback.
+ * @details This function should be called regularly (every ~10ms) from the
+ *          main loop. It:
+ *          1. Runs calibration if not yet done
+ *          2. Reads corrected quaternion from IMU
+ *          3. Buffers quaternion components until a full frame is collected
+ *          4. Runs Edge Impulse classifier on the complete frame
+ *          5. Updates the error score based on classification result
+ *          6. Applies haptic + LED feedback
+ */
+extern "C" void add_sensor_data(void)
+{
+    // Keep the vibration state machine ticking
+    vib_update();
+
+    // Run calibration on first call (blocks for ~5 seconds)
+    if (!calibrated) {
+        calibrateQuaternion();
+        return;
+    }
+
+    // Get corrected orientation (relative to calibration baseline)
     Quaternion q = invQ();
 
-    // Geser buffer (Rolling window)
-    memmove(&sensor_buffer[0], &sensor_buffer[4], (EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE - 4) * sizeof(float));
-    sensor_buffer[EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE-4] = q.w;
-    sensor_buffer[EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE-3] = q.x;
-    sensor_buffer[EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE-2] = q.y;
-    sensor_buffer[EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE-1] = q.z;
+    // Buffer quaternion components (4 floats per sample)
+    if (s_buf_idx + 4 <= EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE) {
+        s_sensor_buf[s_buf_idx++] = q.w;
+        s_sensor_buf[s_buf_idx++] = q.x;
+        s_sensor_buf[s_buf_idx++] = q.y;
+        s_sensor_buf[s_buf_idx++] = q.z;
+    }
 
-    // Sederhanakan: Misal prob_wrong didapat dari classifier
-    // Di sini panggil run_classifier() seperti code kamu sebelumnya
+    // If buffer is full, run the classifier
+    if (s_buf_idx >= EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE) {
 
-    // Logic penentuan intensity
-    if (ema_score > 0.75f) current_intensity = LEVEL_BAHAYA;
-    else if (ema_score > 0.25f) current_intensity = LEVEL_KOREKSI;
-    else current_intensity = LEVEL_NONE;
+        // Wrap buffer into Edge Impulse signal format
+        signal_t signal;
+        numpy::signal_from_buffer(s_sensor_buf,
+                                  EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE,
+                                  &signal);
 
-    update_vibration(current_intensity);
+        ei_impulse_result_t result = {0};
+        EI_IMPULSE_ERROR    err    = run_classifier(&signal, &result, false);
+
+        if (err != EI_IMPULSE_OK) {
+            ei_printf("[ERR] classifier: %d\r\n", (int)err);
+            s_buf_idx = 0;
+            return;
+        }
+
+        // Find the label with the highest confidence
+        float       best_val   = 0.0f;
+        const char *best_label = nullptr;
+
+        for (uint8_t i = 0; i < EI_CLASSIFIER_LABEL_COUNT; i++) {
+            if (result.classification[i].value > best_val) {
+                best_val   = result.classification[i].value;
+                best_label = result.classification[i].label;
+            }
+        }
+
+        // Only act if confidence exceeds the threshold
+        if (best_label != nullptr && best_val >= CONFIDENCE_THRESHOLD) {
+
+            // Update score based on classification
+            if (strcmp(best_label, "wrong_move") == 0) {
+                s_last_label   = LAST_WRONG;
+                s_wrong_score += SCORE_INC_WRONG;
+                if (s_wrong_score > SCORE_MAX) s_wrong_score = SCORE_MAX;
+
+            } else if (strcmp(best_label, "correct_move") == 0) {
+                s_last_label   = LAST_CORRECT;
+                s_wrong_score -= SCORE_DEC_CORRECT;
+                if (s_wrong_score < 0) s_wrong_score = 0;
+
+            } else {
+                // Any other label (e.g., "idle") — treat as neutral/good
+                s_last_label   = LAST_IDLE;
+                s_wrong_score -= SCORE_DEC_CORRECT;
+                if (s_wrong_score < 0) s_wrong_score = 0;
+            }
+
+            ei_printf("%-14s | conf:%.2f | skor:%2d\r\n",
+                      best_label, best_val, s_wrong_score);
+        } else {
+            // Low confidence — log but don't change score
+            ei_printf("%-14s | conf:%.2f | (skip)\r\n",
+                      best_label ? best_label : "?", best_val);
+        }
+
+        // Update haptic + LED feedback based on new score
+        apply_feedback();
+        s_buf_idx = 0;  // Reset buffer for next frame
+    }
+
+    // Small delay to control sampling rate (~100Hz with 10ms)
+    HAL_Delay(10);
 }

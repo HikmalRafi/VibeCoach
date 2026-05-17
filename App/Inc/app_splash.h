@@ -3,13 +3,13 @@
 
 /**
  * @file    app_splash.h
- * @brief   Splash screen saat boot / wake dari STANDBY.
+ * @brief   Splash screen module for boot and wake-from-STANDBY events.
  *
- * @details Modul ini menangani tampilan awal:
- *          - Animasi boot normal  : logo + nama alat + loading bar
- *          - Animasi wake         : lebih singkat, langsung ke menu
+ * @details This module handles the initial display sequences:
+ *          - Normal boot animation : logo + device name + loading bar
+ *          - Wake animation        : shorter sequence, goes directly to menu
  *
- * @author  Tim Kamu
+ * @author  Your Team
  * @version 1.0
  */
 
@@ -17,50 +17,59 @@
 #include <stdint.h>
 
 /* =========================================================================
- * KONFIGURASI SPLASH SCREEN
+ * SPLASH SCREEN CONFIGURATION
  * ========================================================================= */
 
-/** Nama alat yang ditampilkan di splash screen */
+/** @brief Device name displayed on the splash screen */
 #define SPLASH_DEVICE_NAME      "AI-Motion"
 
-/** Subtitle / tagline di bawah nama alat */
+/** @brief Subtitle / tagline displayed below the device name */
 #define SPLASH_SUBTITLE         "Correction v1.0"
 
-/** Durasi splash screen normal (ms) - sebelum masuk menu */
+/** @brief Normal splash screen duration (ms) - before entering menu */
 #define SPLASH_DURATION_MS      2500
 
-/** Durasi splash screen wake (ms) - lebih singkat */
+/** @brief Wake splash screen duration (ms) - shorter than normal boot */
 #define SPLASH_WAKE_DURATION_MS 1200
 
 /* =========================================================================
- * DEKLARASI FUNGSI
+ * FUNCTION DECLARATIONS
  * ========================================================================= */
 
 /**
- * @brief Tampilkan splash screen saat boot pertama kali.
+ * @brief Display the splash screen during initial boot.
  *
- * @details Menampilkan:
- *          - Background berwarna tema
- *          - Nama alat (besar, di tengah)
- *          - Subtitle kecil
- *          - Loading bar animasi
- *          - Durasi: SPLASH_DURATION_MS
+ * @details Shows:
+ *          - Theme-colored background
+ *          - Device name (large, centered)
+ *          - Small subtitle text
+ *          - Animated loading bar
+ *          - Duration: SPLASH_DURATION_MS
+ *
+ * @note This function blocks for the duration of the splash screen.
+ *       Called once during system startup before entering the main menu.
  */
 void app_splash_show_boot(void);
 
 /**
- * @brief Tampilkan splash screen singkat saat wake dari STANDBY.
+ * @brief Display a short splash screen when waking from STANDBY mode.
  *
- * @details Versi lebih ringkas dari boot splash.
- *          Durasi: SPLASH_WAKE_DURATION_MS
+ * @details A more compact version of the boot splash.
+ *          Duration: SPLASH_WAKE_DURATION_MS
+ *
+ * @note This provides visual feedback that the device is resuming
+ *       from low-power state without the full boot sequence.
  */
 void app_splash_show_wake(void);
 
 /**
- * @brief Tampilkan animasi shutdown sebelum masuk STANDBY.
+ * @brief Display a shutdown animation before entering STANDBY mode.
  *
- * @details Menampilkan teks "Shutting down..." + progress bar mengecil.
- *          Dipanggil dari bsp_power_on_shutdown_callback().
+ * @details Shows "Shutting down..." text with a shrinking progress bar.
+ *          Called from bsp_power_on_shutdown_callback().
+ *
+ * @note This provides visual confirmation that the device is
+ *       powering down safely.
  */
 void app_splash_show_shutdown(void);
 
