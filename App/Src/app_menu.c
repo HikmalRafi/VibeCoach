@@ -2,11 +2,13 @@
  * @file    app_menu.c
  * @brief   Menu navigation system for STM32-based training device.
  * @details Handles page rendering, button navigation, and training session
- *          launching with a navy dark theme UI.
+ *          launching with a navy dark theme UI. Optimized for real-time performance.
  */
 
 #include "../../App/Inc/app_menu.h"
 #include "../../Bsp/Inc/bsp_led_rgb.h"
+#include <string.h>
+#include <stdio.h>
 
 /* =========================================================================
  * NAVY DARK THEME COLOR PALETTE (RGB565)
@@ -75,10 +77,24 @@ static uint8_t last_cursor_pos = 0;  /**< Previous cursor position (for redraw o
 volatile uint8_t    cursor_pos   = 0;       /**< Currently selected item index. */
 const MenuPage_t*   current_page = NULL;    /**< Pointer to the active menu page. */
 
+/* =========================================================================
+ * TRAINING DISPLAY STATE (OPTIMIZED - Minimal CPU Load)
+ * ========================================================================= */
+static uint8_t  training_display_active = 0;  /**< Flag: training display is active */
+static uint32_t last_display_update = 0;      /**< Timestamp of last display update */
+static int      last_score = -999;            /**< Last displayed score */
+static char     last_label_str[20] = "";      /**< Last displayed label */
+
 /* Forward declarations — defined at the bottom of this file */
 extern const MenuPage_t page_main;
 extern const MenuPage_t page_deltoid;
 extern const MenuPage_t page_pushup;
+
+/* =========================================================================
+ * EXTERNAL VARIABLES (from tinyML.cpp)
+ * ========================================================================= */
+extern int s_wrong_score;
+extern const char* s_last_label_str;
 
 /* =========================================================================
  * UI DRAWING HELPERS
@@ -149,6 +165,92 @@ static void ui_draw_menu_item(uint16_t y, char icon_char,
 }
 
 /* =========================================================================
+ * OPTIMIZED TRAINING DISPLAY (Minimal, Non-blocking, 500ms throttle)
+ * ========================================================================= */
+
+/**
+ * @brief Ultra-light training display - updates only when data changes
+ * @details Static elements drawn once, dynamic elements updated sparingly.
+ *          Throttled to 500ms to minimize CPU overhead.
+ */
+void training_display_simple(void)
+{
+    /* Exit if training not active */
+    if (!training_is) {
+        if (training_display_active) {
+            training_display_active = 0;
+        }
+        return;
+    }
+
+    uint32_t now = HAL_GetTick();
+
+    /* Initialize display once when training starts */
+    if (!training_display_active) {
+        ST7735_FillScreenFast(COLOR_BG);
+        training_display_active = 1;
+        last_score = -999;
+        last_label_str[0] = '\0';
+        last_display_update = 0;
+
+        /* Draw static elements - only once */
+        const char* ex_name = "TRAINING";
+        if (current_page == &page_deltoid) ex_name = "DELTOID";
+        else if (current_page == &page_pushup) ex_name = "PUSH UP";
+
+        char buf[32];
+
+        /* Header */
+        ST7735_FillRectangle(0, 0, LCD_W, HDR_H, COLOR_HDR_BG);
+        snprintf(buf, sizeof(buf), "%s MODE", ex_name);
+        ST7735_WriteString(5, 2, buf, Font_7x10, COLOR_ACCENT, COLOR_HDR_BG);
+
+        /* Static labels */
+        ST7735_WriteString(10, CONTENT_Y + 2, "STATUS: ACTIVE", Font_7x10, COLOR_SUCCESS, COLOR_BG);
+        ST7735_WriteString(10, LCD_H - 15, "OK: STOP", Font_7x10, COLOR_HINT, COLOR_BG);
+
+        /* Status bar */
+        ui_draw_statusbar("TRAINING IN PROGRESS", COLOR_WARNING);
+    }
+
+    /* Throttle updates to 500ms for dynamic content only */
+    if (now - last_display_update < 500) {
+        return;
+    }
+    last_display_update = now;
+
+    char buf[32];
+
+    /* Update score if changed */
+    if (s_wrong_score != last_score) {
+        uint16_t y = CONTENT_Y + 18;
+        ST7735_FillRectangle(10, y, LCD_W - 20, 16, COLOR_BG);
+
+        snprintf(buf, sizeof(buf), "SCORE: %d", s_wrong_score);
+        uint16_t color = COLOR_TEXT;
+        if (s_wrong_score >= 8) color = COLOR_DANGER;
+        else if (s_wrong_score >= 4) color = COLOR_WARNING;
+
+        ST7735_WriteString(10, y + 1, buf, Font_7x10, color, COLOR_BG);
+        last_score = s_wrong_score;
+    }
+
+    /* Update label if changed */
+    if (s_last_label_str != NULL && strcmp(s_last_label_str, last_label_str) != 0) {
+        uint16_t y = CONTENT_Y + 36;
+        ST7735_FillRectangle(10, y, LCD_W - 20, 16, COLOR_BG);
+
+        uint16_t color = COLOR_SUBTEXT;
+        if (strstr(s_last_label_str, "CORRECT")) color = COLOR_SUCCESS;
+        else if (strstr(s_last_label_str, "WRONG")) color = COLOR_DANGER;
+
+        ST7735_WriteString(10, y + 1, s_last_label_str, Font_7x10, color, COLOR_BG);
+        strncpy(last_label_str, s_last_label_str, sizeof(last_label_str) - 1);
+        last_label_str[sizeof(last_label_str) - 1] = '\0'; /* Safety null */
+    }
+}
+
+/* =========================================================================
  * NAVIGATION FUNCTIONS
  * ========================================================================= */
 
@@ -175,42 +277,41 @@ void action_back(void) {
 }
 
 /* =========================================================================
- * TRAINING ACTION
+ * TRAINING ACTION (OPTIMIZED - No unnecessary delays)
  * ========================================================================= */
 
 /**
  * @brief Start a deltoid training session.
  * @details Resets the score, then enters a loop that continuously calls
  *          add_sensor_data() to process IMU data and run the classifier.
- *          The loop exits when the OK button is pressed, which sets
- *          training_is = 0 and marks the device as uncalibrated (so the
- *          next session will re-run calibration).
- *
- *          Note: add_sensor_data() internally handles:
- *          - Calibration (if not yet done)
- *          - Reading the inverse quaternion (invQ)
- *          - Buffering and classifying sensor data
- *          No need to call these separately.
+ *          Display updated minimally to avoid CPU overhead.
+ *          The loop exits when the OK button is pressed.
  */
 void action_start_deltoid(void)
 {
     training_is = 1;
 
-    // Reset score for a fresh training session
+    /* Reset score for a fresh training session */
     extern void tinyml_reset_score(void);
     tinyml_reset_score();
 
-    // Training loop — runs until OK button is pressed
+    /* Training loop - runs until OK button is pressed */
     while (training_is == 1)
     {
-        // This single call handles everything: calibration, IMU read,
-        // quaternion correction, buffering, classification, and feedback.
+        /* Priority 1: Process sensor data & ML classification */
         add_sensor_data();
 
-        // Check for OK button press to exit training
+        /* Priority 2: Update display (throttled internally) */
+        training_display_simple();
+
+        /* Check for OK button press to exit training */
         if (button_read(&btn_ok) == 1) {
-            training_is = 0;          // Exit the training loop
-            calibrated  = false;      // Force re-calibration on next session
+            training_is = 0;          /* Exit the training loop */
+            extern volatile bool calibrated;  /* Match declaration in imu_calibration.h */
+            calibrated  = false;      /* Force re-calibration on next session */
+            training_display_active = 0;  /* Reset display state */
+            page_changed = 1;         /* Force menu redraw on return */
+            HAL_Delay(50);            /* Debounce delay */
         }
     }
 }

@@ -91,6 +91,9 @@ extern TIM_HandleTypeDef htim2;   /* LED Green  PA5 — CH1     */
 extern TIM_HandleTypeDef htim3;   /* LED Red    PA6 — CH1     */
                                   /* LED Blue   PB0 — CH3     */
 
+int s_wrong_score = 0;                    // Make score globally accessible
+const char* s_last_label_str = "idle";    // Make label globally accessible
+
 /* --------------------------------------------------------------------------
  * RGB LED Controller
  * -------------------------------------------------------------------------- */
@@ -285,7 +288,6 @@ static float s_sensor_buf[EI_CLASSIFIER_DSP_INPUT_FRAME_SIZE];
 /** @brief Current write position in the sensor buffer. */
 static int   s_buf_idx     = 0;
 /** @brief Accumulated error score (0 = perfect, higher = worse form). */
-static int   s_wrong_score = 0;
 
 /** @brief Classification labels used for feedback logic. */
 typedef enum : uint8_t {
@@ -442,31 +444,28 @@ extern "C" void add_sensor_data(void)
         // Only act if confidence exceeds the threshold
         if (best_label != nullptr && best_val >= CONFIDENCE_THRESHOLD) {
 
-            // Update score based on classification
-            if (strcmp(best_label, "wrong_move") == 0) {
-                s_last_label   = LAST_WRONG;
-                s_wrong_score += SCORE_INC_WRONG;
-                if (s_wrong_score > SCORE_MAX) s_wrong_score = SCORE_MAX;
+             // Update score based on classification
+             if (strcmp(best_label, "wrong_move") == 0) {
+                 s_last_label_str = "WRONG";        // ← TAMBAHKAN
+                 s_last_label   = LAST_WRONG;
+                 s_wrong_score += SCORE_INC_WRONG;
+                 if (s_wrong_score > SCORE_MAX) s_wrong_score = SCORE_MAX;
 
-            } else if (strcmp(best_label, "correct_move") == 0) {
-                s_last_label   = LAST_CORRECT;
-                s_wrong_score -= SCORE_DEC_CORRECT;
-                if (s_wrong_score < 0) s_wrong_score = 0;
+             } else if (strcmp(best_label, "correct_move") == 0) {
+                 s_last_label_str = "CORRECT";      // ← TAMBAHKAN
+                 s_last_label   = LAST_CORRECT;
+                 s_wrong_score -= SCORE_DEC_CORRECT;
+                 if (s_wrong_score < 0) s_wrong_score = 0;
 
-            } else {
-                // Any other label (e.g., "idle") — treat as neutral/good
-                s_last_label   = LAST_IDLE;
-                s_wrong_score -= SCORE_DEC_CORRECT;
-                if (s_wrong_score < 0) s_wrong_score = 0;
-            }
-
-            ei_printf("%-14s | conf:%.2f | skor:%2d\r\n",
-                      best_label, best_val, s_wrong_score);
-        } else {
-            // Low confidence — log but don't change score
-            ei_printf("%-14s | conf:%.2f | (skip)\r\n",
-                      best_label ? best_label : "?", best_val);
-        }
+             } else {
+                 s_last_label_str = "IDLE";         // ← TAMBAHKAN
+                 s_last_label   = LAST_IDLE;
+                 s_wrong_score -= SCORE_DEC_CORRECT;
+                 if (s_wrong_score < 0) s_wrong_score = 0;
+             }
+         } else {
+             s_last_label_str = "LOW CONF";         // ← TAMBAHKAN
+         }
 
         // Update haptic + LED feedback based on new score
         apply_feedback();
@@ -474,5 +473,5 @@ extern "C" void add_sensor_data(void)
     }
 
     // Small delay to control sampling rate (~100Hz with 10ms)
-    HAL_Delay(10);
+    HAL_Delay(5);
 }
